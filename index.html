@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Trading Chart — Core</title>
+    <style>
+        /* Clean slate CSS */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: #0A0C0F; /* Bybit Dark Theme */
+            color: #E7E9EC;
+            font-family: -apple-system, sans-serif;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            display: flex;
+            flex-direction: column;
+        }
+        #header {
+            padding: 12px 16px;
+            border-bottom: 1px solid #22262D;
+            font-weight: 700;
+            font-size: 16px;
+            display: flex;
+            justify-content: space-between;
+        }
+        #chart-container {
+            flex: 1;
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="header">
+        <span>BTCUSDT · 1m</span>
+        <span style="color: #6B7280; font-size: 12px;">Live data ready</span>
+    </div>
+
+    <div id="chart-container"></div>
+
+    <!-- Load TradingView Lightweight Charts from CDN -->
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+
+    <script>
+        // 1. Get the container
+        const container = document.getElementById('chart-container');
+
+        // 2. Initialize the Chart (Bybit/TradingView dark theme colors)
+        const chart = LightweightCharts.createChart(container, {
+            width: container.clientWidth,
+            height: container.clientHeight,
+            layout: {
+                background: { color: '#0A0C0F' },
+                textColor: '#E7E9EC',
+            },
+            grid: {
+                vertLines: { color: '#1A1D24' },
+                horzLines: { color: '#1A1D24' },
+            },
+            crosshair: {
+                mode: LightweightCharts.CrosshairMode.Normal,
+            },
+            rightPriceScale: {
+                borderColor: '#22262D',
+            },
+            timeScale: {
+                borderColor: '#22262D',
+                timeVisible: true,
+            },
+        });
+
+        // 3. Add a Candlestick Series
+        const candlestickSeries = chart.addCandlestickSeries({
+            upColor: '#1ED9A5',    // Your old GREEN
+            downColor: '#F0455C',  // Your old RED
+            borderVisible: false,
+            wickUpColor: '#1ED9A5',
+            wickDownColor: '#F0455C',
+        });
+
+        // 4. Generate Mock Data (simulating price movement)
+        function generateMockData(count) {
+            const data = [];
+            let price = 61250; // Starting price
+            let time = Math.floor(Date.now() / 1000) - (count * 60); // 1 minute bars
+
+            for (let i = 0; i < count; i++) {
+                const drift = (Math.random() - 0.5) * 150; // price volatility
+                const open = price;
+                const close = Math.max(0.01, open + drift);
+                const high = Math.max(open, close) + Math.random() * 50;
+                const low = Math.max(0.01, Math.min(open, close) - Math.random() * 50);
+
+                data.push({
+                    time: time + i * 60,
+                    open: open,
+                    high: high,
+                    low: low,
+                    close: close,
+                });
+                price = close;
+            }
+            return data;
+        }
+
+        // Load the data
+        candlestickSeries.setData(generateMockData(200));
+
+        // 5. Handle Window Resize to keep the chart responsive
+        window.addEventListener('resize', () => {
+            chart.applyOptions({
+                width: container.clientWidth,
+                height: container.clientHeight,
+            });
+        });
+    </script>
+</body>
+</html>
