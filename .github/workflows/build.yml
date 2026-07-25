@@ -17,11 +17,11 @@ jobs:
         with:
           node-version: 20
 
-      - name: Set up JDK
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          java-version: 17
 
       - name: Install Capacitor
         run: |
@@ -31,51 +31,42 @@ jobs:
 
       - name: Init Capacitor project
         run: |
-          npx cap init "TradingChartApp" "com.yourname.tradingchartapp" --web-dir=www
+          npx cap init "TradingChartApp" "com.algotred.tradingapp" --web-dir=www
 
+      # Copy web assets from the repository root
       - name: Copy web assets into www/
         run: |
-          mkdir -p www
-          cp trading-app/index.html www/
-          cp trading-app/style.css www/
-          cp trading-app/app.js www/
-          cp trading-app/bybit-api.js www/
+          cp index.html www/
+          cp style.css www/
+          cp app.js www/
+          cp bybit-api.js www/
 
       - name: Add Android platform
         run: npx cap add android
 
+      # 🔧 Fix Java 21 compatibility if needed (latest Capacitor works with Java 17)
+      - name: Patch build.gradle for Java 21 compatibility (optional)
+        run: |
+          sed -i 's/sourceCompatibility JavaVersion.VERSION_17/sourceCompatibility JavaVersion.VERSION_21/' android/app/build.gradle
+          sed -i 's/targetCompatibility JavaVersion.VERSION_17/targetCompatibility JavaVersion.VERSION_21/' android/app/build.gradle
+
+      # ✅ Wire in the native BybitSigner plugin (must exist in android-plugin/)
       - name: Wire in native BybitSigner plugin
         run: |
           PKG_DIR="android/app/src/main/java/com/algotred/tradingapp"
           mkdir -p "$PKG_DIR"
           cp android-plugin/BybitSignerPlugin.java "$PKG_DIR/"
-          
-          # Insert dependency
-          sed -i '/^dependencies {/a\    implementation "androidx.security:security-crypto:1.1.0"' android/app/build.gradle
+
+          echo "" >> android/app/build.gradle
+          echo "dependencies {" >> android/app/build.gradle
+          echo "    implementation 'androidx.security:security-crypto:1.1.0'" >> android/app/build.gradle
+          echo "}" >> android/app/build.gradle
 
           MAIN_ACTIVITY=$(find android/app/src/main/java -name "MainActivity.java")
-          
-          # Add import
-          sed -i '/import com.getcapacitor.BridgeActivity;/a import com.algotred.tradingapp.BybitSignerPlugin;' "$MAIN_ACTIVITY"
-          
-          # Inject onCreate override
-          perl -0777 -pi -e 's/\{\s*\}\s*$/{\n    @Override\n    public void onCreate(android.os.Bundle savedInstanceState) {\n        registerPlugin(BybitSignerPlugin.class);\n        super.onCreate(savedInstanceState);\n    }\n}\n/' "$MAIN_ACTIVITY"
-          
-          echo "----- MainActivity.java after patch -----"
-          cat "$MAIN_ACTIVITY"
 
-          # Force resolve kotlin-stdlib version
-          # Note: The <<- allows us to indent the EOF marker safely
-          cat >> android/app/build.gradle <<- 'EOF'
-          configurations.all {
-              resolutionStrategy {
-                  force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.24'
-                  force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24'
-                  force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24'
-                  force 'org.jetbrains.kotlin:kotlin-stdlib-common:1.9.24'
-              }
-          }
-          EOF
+          sed -i '/import com.getcapacitor.BridgeActivity;/a import com.algotred.tradingapp.BybitSignerPlugin;' "$MAIN_ACTIVITY"
+
+          perl -0777 -pi -e 's/class MainActivity extends BridgeActivity \{\s*\}/class MainActivity extends BridgeActivity {\n    @Override\n    public void onCreate(android.os.Bundle savedInstanceState) {\n        registerPlugin(BybitSignerPlugin.class);\n        super.onCreate(savedInstanceState);\n    }\n}/' "$MAIN_ACTIVITY"
 
       - name: Sync web assets
         run: npx cap sync android
@@ -84,8 +75,12 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload APK to GitHub Release
+        uses: softprops/action-gh-release@v1
         with:
-          name: app-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          files: android/app/build/outputs/apk/debug/app-debug.apk
+          tag_name: v1.0.${{ github.run_number }}
+          name: "Trading App Build ${{ github.run_number }}"
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
