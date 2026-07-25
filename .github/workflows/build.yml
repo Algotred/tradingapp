@@ -49,33 +49,36 @@ jobs:
           PKG_DIR="android/app/src/main/java/com/algotred/tradingapp"
           mkdir -p "$PKG_DIR"
           cp android-plugin/BybitSignerPlugin.java "$PKG_DIR/"
-          
-          # insert the dependency INSIDE the existing `dependencies { ... }` block
+          # insert the dependency INSIDE the existing `dependencies { ... }` block,
+          # right after its opening line — a blind end-of-file append breaks the gradle script
           sed -i '/^dependencies {/a\    implementation "androidx.security:security-crypto:1.1.0"' android/app/build.gradle
 
           MAIN_ACTIVITY=$(find android/app/src/main/java -name "MainActivity.java")
-          
           # add the import, right after Capacitor's own BridgeActivity import
           sed -i '/import com.getcapacitor.BridgeActivity;/a import com.algotred.tradingapp.BybitSignerPlugin;' "$MAIN_ACTIVITY"
-          
-          # replace the empty body with an onCreate override
+          # Capacitor scaffolds MainActivity as `public class MainActivity extends BridgeActivity {}`
+          # (empty body) — replace that empty body with an onCreate override that registers the plugin
+          # before the bridge initializes. If Capacitor ever changes this default template, this
+          # replacement won't match and the build will still succeed, just without the plugin wired in —
+          # check MainActivity.java in that case and fall back to the manual snippet.
           perl -0777 -pi -e 's/\{\s*\}\s*$/{\n    @Override\n    public void onCreate(android.os.Bundle savedInstanceState) {\n        registerPlugin(BybitSignerPlugin.class);\n        super.onCreate(savedInstanceState);\n    }\n}\n/' "$MAIN_ACTIVITY"
-          
           echo "----- MainActivity.java after patch -----"
           cat "$MAIN_ACTIVITY"
 
-          # Force resolve kotlin-stdlib version
+          # security-crypto pulls in its own kotlin-stdlib version, which collides with the one
+          # Capacitor's core already bundles ("duplicate class" build failure) — force everything
+          # to resolve to one consistent version so only one copy of each class exists.
           cat >> android/app/build.gradle << 'EOF'
 
-          configurations.all {
-              resolutionStrategy {
-                  force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.24'
-                  force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24'
-                  force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24'
-                  force 'org.jetbrains.kotlin:kotlin-stdlib-common:1.9.24'
-              }
-          }
-          EOF
+configurations.all {
+    resolutionStrategy {
+        force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.24'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-common:1.9.24'
+    }
+}
+EOF
 
       - name: Sync web assets
         run: npx cap sync android
