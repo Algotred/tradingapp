@@ -1,122 +1,681 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Trading Chart — Core</title>
-    <style>
-        /* Clean slate CSS */
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            background: #0A0C0F; /* Bybit Dark Theme */
-            color: #E7E9EC;
-            font-family: -apple-system, sans-serif;
-            overflow: hidden;
-            height: 100vh;
-            width: 100vw;
-            display: flex;
-            flex-direction: column;
-        }
-        #header {
-            padding: 12px 16px;
-            border-bottom: 1px solid #22262D;
-            font-weight: 700;
-            font-size: 16px;
-            display: flex;
-            justify-content: space-between;
-        }
-        #chart-container {
-            flex: 1;
-            position: relative;
-            width: 100%;
-            height: 100%;
-        }
-    </style>
+<meta charset="UTF-8">
+<title>Chart Tools — Trendline / Box / PnL</title>
+<script>
+  // Load the charting library with a fallback CDN, and fail loudly (not silently)
+  // if neither is reachable — better than a blank screen with a console-only error.
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+  function showLoadError() {
+    document.body.innerHTML =
+      '<div style="padding:24px;color:#ef5350;font-family:sans-serif;background:#131722;height:100%">' +
+      '<h3>Chart library failed to load</h3>' +
+      '<p style="color:#d1d4dc">Both CDN sources for lightweight-charts were unreachable from this device/network. ' +
+      'Try a different network, or download lightweight-charts.standalone.production.js and reference it as a local file instead of a CDN link.</p>' +
+      '</div>';
+  }
+  window.__chartsReady = loadScript('https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js')
+    .catch(() => loadScript('https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js'))
+    .catch(() => { showLoadError(); throw new Error('chart lib unavailable'); });
+</script>
+<style>
+  :root{
+    --bg:#131722; --panel:#1e222d; --border:#2a2e39; --text:#d1d4dc; --muted:#787b86;
+    --accent:#2962ff; --green:#26a69a; --red:#ef5350; --greenSoft:rgba(38,166,154,0.18); --redSoft:rgba(239,83,80,0.18);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;}
+  #app{display:flex;flex-direction:column;height:100%;}
+  #toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--border);}
+  .tool-btn{
+    display:flex;align-items:center;gap:5px;padding:8px 10px;background:transparent;border:1px solid var(--border);
+    border-radius:6px;color:var(--text);font-size:13px;cursor:pointer;user-select:none;
+    -webkit-tap-highlight-color:transparent;touch-action:manipulation;white-space:nowrap;
+  }
+  .tool-btn:active{background:#2a2e39;}
+  .tool-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .tool-btn.danger:active{background:var(--red);color:#fff;}
+  .sep{width:1px;height:22px;background:var(--border);margin:0 2px;}
+  #hintRow{padding:6px 10px;background:var(--panel);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted);}
+  #chart-container{position:relative;flex:1;}
+</style>
 </head>
 <body>
+<div id="app">
+  <div id="toolbar">
+    <button class="tool-btn active" data-tool="cursor">↖ Cursor</button>
+    <button class="tool-btn" data-tool="trendline">╱ Trendline</button>
+    <button class="tool-btn" data-tool="box">▭ Box</button>
+    <button class="tool-btn" data-tool="pnl">🎯 PnL Box</button>
+    <div class="sep"></div>
+    <button class="tool-btn danger" id="deleteBtn">🗑 Delete</button>
+    <button class="tool-btn danger" id="clearBtn">Clear all</button>
+  </div>
+  <div id="hintRow"><span id="hint">Select a tool, then tap the chart</span></div>
+  <div id="chart-container"></div>
+</div>
 
-    <div id="header">
-        <span>BTCUSDT · 1m</span>
-        <span style="color: #6B7280; font-size: 12px;">Live data ready</span>
-    </div>
+<script>
+(async function main() {
+await window.__chartsReady; // wait for the CDN script to actually finish loading
 
-    <div id="chart-container"></div>
+/* ============================================================
+   1. CHART SETUP + DUMMY DATA
+   ============================================================ */
+const container = document.getElementById('chart-container');
 
-    <!-- Load TradingView Lightweight Charts from CDN -->
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+const chart = LightweightCharts.createChart(container, {
+  layout: { background: { type: 'solid', color: '#131722' }, textColor: '#d1d4dc' },
+  grid: { vertLines: { color: '#1e222d' }, horzLines: { color: '#1e222d' } },
+  rightPriceScale: {
+    borderColor: '#2a2e39',
+    autoScale: true, // always fit the visible candle range — this is what prevents infinite vertical pan/zoom
+  },
+  timeScale: {
+    borderColor: '#2a2e39', timeVisible: true,
+    rightOffset: 20, // reserve empty space to the right of the last candle so there's room to draw ahead of price
+  },
+  crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  handleScale: {
+    axisPressedMouseMove: { time: true, price: false }, // disable manual price-axis drag entirely
+    pinch: true, mouseWheel: true, axisDoubleClickReset: true,
+  },
+});
 
-    <script>
-        // 1. Get the container
-        const container = document.getElementById('chart-container');
+const series = chart.addCandlestickSeries({
+  upColor: '#26a69a', downColor: '#ef5350',
+  borderVisible: false,
+  wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+});
 
-        // 2. Initialize the Chart (Bybit/TradingView dark theme colors)
-        const chart = LightweightCharts.createChart(container, {
-            width: container.clientWidth,
-            height: container.clientHeight,
-            layout: {
-                background: { color: '#0A0C0F' },
-                textColor: '#E7E9EC',
-            },
-            grid: {
-                vertLines: { color: '#1A1D24' },
-                horzLines: { color: '#1A1D24' },
-            },
-            crosshair: {
-                mode: LightweightCharts.CrosshairMode.Normal,
-            },
-            rightPriceScale: {
-                borderColor: '#22262D',
-            },
-            timeScale: {
-                borderColor: '#22262D',
-                timeVisible: true,
-            },
+function generateData(n) {
+  const data = [];
+  let price = 100;
+  let t = Math.floor(Date.now() / 1000) - n * 86400;
+  for (let i = 0; i < n; i++) {
+    const open = price;
+    const change = (Math.random() - 0.5) * 4;
+    const close = Math.max(1, open + change);
+    const high = Math.max(open, close) + Math.random() * 1.5;
+    const low = Math.min(open, close) - Math.random() * 1.5;
+    data.push({ time: t, open, high, low: Math.max(0.1, low), close });
+    price = close;
+    t += 86400;
+  }
+  return data;
+}
+series.setData(generateData(300));
+chart.timeScale().fitContent();
+computeBarInterval(series.data());
+
+new ResizeObserver(entries => {
+  const { width, height } = entries[0].contentRect;
+  chart.resize(width, height);
+}).observe(container);
+
+/* ============================================================
+   2. COORDINATE HELPERS
+   ============================================================ */
+// bar interval in seconds, derived from the actual data — used to extrapolate
+// time values into the reserved future whitespace, where coordinateToTime()
+// alone returns null because there's no real candle there yet.
+let barIntervalSeconds = 86400;
+function computeBarInterval(data) {
+  if (data.length >= 2) barIntervalSeconds = data[data.length - 1].time - data[data.length - 2].time;
+}
+
+function timeToX(t) { return chart.timeScale().timeToCoordinate(t); }
+function xToTime(x) {
+  const t = chart.timeScale().coordinateToTime(x);
+  if (t !== null) return t;
+  // past the last loaded candle (future whitespace) — extrapolate from the
+  // logical bar index instead, which stays valid past the data edge
+  const logical = chart.timeScale().coordinateToLogical(x);
+  if (logical === null) return null;
+  const data = series.data();
+  if (!data.length) return null;
+  const lastLogical = data.length - 1;
+  const lastTime = data[lastLogical].time;
+  return Math.round(lastTime + (logical - lastLogical) * barIntervalSeconds);
+}
+function priceToY(p) { return series.priceToCoordinate(p); }
+function yToPrice(y) { return series.coordinateToPrice(y); }
+
+// shift an x-coordinate by a fixed number of *screen pixels* and convert back
+// to a time value — this is what keeps the PnL box a constant visual size
+// regardless of zoom level, instead of a fixed bar-count (bug #3: 15 bars
+// shrinks to nothing when zoomed out, or fills the screen when zoomed in).
+function addPixels(xRef, pixels) { return xToTime(xRef + pixels); }
+
+function bitX(scope, mediaX) { return Math.round(mediaX * scope.horizontalPixelRatio); }
+function bitY(scope, mediaY) { return Math.round(mediaY * scope.verticalPixelRatio); }
+
+const HANDLE_R = 5;       // px radius for the visible endpoint handle dot
+const HIT_TOL = 14;       // px tolerance for hit-testing — generous for touch/fingertip accuracy
+
+function distToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq === 0 ? 0 : ((px - x1) * dx + (py - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = x1 + t * dx, cy = y1 + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+/* ============================================================
+   3. BASE CLASS — shared plumbing for every draggable primitive
+   ============================================================ */
+class DraggablePrimitive {
+  constructor() {
+    this.selected = false;
+    this._chart = null;
+    this._series = null;
+    this._requestUpdate = null;
+    this._paneView = { renderer: () => ({ draw: (target) => this.draw(target) }) };
+  }
+  attached(param) {
+    this._chart = param.chart;
+    this._series = param.series;
+    this._requestUpdate = param.requestUpdate;
+  }
+  detached() {}
+  updateAllViews() {}
+  paneViews() { return [this._paneView]; }
+  refresh() { if (this._requestUpdate) this._requestUpdate(); }
+  // override in subclasses:
+  draw(target) {}
+  hitTest(x, y) { return null; }
+  beginDrag(handle, x, y) {}
+  drag(handle, x, y) {}
+  endDrag() {}
+}
+
+/* ============================================================
+   4. TRENDLINE
+   ============================================================ */
+class TrendLine extends DraggablePrimitive {
+  constructor(p1, p2, color = '#2962ff') {
+    super();
+    this.p1 = p1; this.p2 = p2; this.color = color;
+    this._dragOrigin = null;
+  }
+  draw(target) {
+    const x1 = timeToX(this.p1.time), y1 = priceToY(this.p1.price);
+    const x2 = timeToX(this.p2.time), y2 = priceToY(this.p2.price);
+    if (x1 === null || y1 === null || x2 === null || y2 === null) return;
+    target.useBitmapCoordinateSpace(scope => {
+      const ctx = scope.context;
+      ctx.save();
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = 2 * scope.horizontalPixelRatio;
+      ctx.beginPath();
+      ctx.moveTo(bitX(scope, x1), bitY(scope, y1));
+      ctx.lineTo(bitX(scope, x2), bitY(scope, y2));
+      ctx.stroke();
+      if (this.selected) {
+        [[x1, y1], [x2, y2]].forEach(([x, y]) => {
+          ctx.beginPath();
+          ctx.arc(bitX(scope, x), bitY(scope, y), HANDLE_R * scope.horizontalPixelRatio, 0, Math.PI * 2);
+          ctx.fillStyle = '#131722';
+          ctx.fill();
+          ctx.lineWidth = 2 * scope.horizontalPixelRatio;
+          ctx.strokeStyle = this.color;
+          ctx.stroke();
         });
+      }
+      ctx.restore();
+    });
+  }
+  hitTest(x, y) {
+    const x1 = timeToX(this.p1.time), y1 = priceToY(this.p1.price);
+    const x2 = timeToX(this.p2.time), y2 = priceToY(this.p2.price);
+    if (x1 === null || y1 === null || x2 === null || y2 === null) return null;
+    if (Math.hypot(x - x1, y - y1) <= HANDLE_R + HIT_TOL) return 'p1';
+    if (Math.hypot(x - x2, y - y2) <= HANDLE_R + HIT_TOL) return 'p2';
+    if (distToSegment(x, y, x1, y1, x2, y2) <= HIT_TOL) return 'body';
+    return null;
+  }
+  beginDrag(handle, x, y) {
+    if (handle === 'body') {
+      this._dragOrigin = {
+        startX: x, startY: y,
+        p1x: timeToX(this.p1.time), p1y: priceToY(this.p1.price),
+        p2x: timeToX(this.p2.time), p2y: priceToY(this.p2.price),
+      };
+    }
+  }
+  drag(handle, x, y) {
+    if (handle === 'p1') { this.p1 = { time: xToTime(x) ?? this.p1.time, price: yToPrice(y) ?? this.p1.price }; }
+    else if (handle === 'p2') { this.p2 = { time: xToTime(x) ?? this.p2.time, price: yToPrice(y) ?? this.p2.price }; }
+    else if (handle === 'body' && this._dragOrigin) {
+      const o = this._dragOrigin;
+      const dx = x - o.startX, dy = y - o.startY;
+      const t1 = xToTime(o.p1x + dx), pr1 = yToPrice(o.p1y + dy);
+      const t2 = xToTime(o.p2x + dx), pr2 = yToPrice(o.p2y + dy);
+      if (t1 !== null && pr1 !== null) this.p1 = { time: t1, price: pr1 };
+      if (t2 !== null && pr2 !== null) this.p2 = { time: t2, price: pr2 };
+    }
+    this.refresh();
+  }
+  endDrag() { this._dragOrigin = null; }
+}
 
-        // 3. Add a Candlestick Series
-        const candlestickSeries = chart.addCandlestickSeries({
-            upColor: '#1ED9A5',    // Your old GREEN
-            downColor: '#F0455C',  // Your old RED
-            borderVisible: false,
-            wickUpColor: '#1ED9A5',
-            wickDownColor: '#F0455C',
+/* ============================================================
+   5. BOX
+   ============================================================ */
+class BoxDrawing extends DraggablePrimitive {
+  constructor(p1, p2, color = '#2962ff') {
+    super();
+    this.p1 = p1; this.p2 = p2; this.color = color; // p1/p2 = any two opposite corners
+    this._dragOrigin = null;
+  }
+  draw(target) {
+    const x1 = timeToX(this.p1.time), y1 = priceToY(this.p1.price);
+    const x2 = timeToX(this.p2.time), y2 = priceToY(this.p2.price);
+    if (x1 === null || y1 === null || x2 === null || y2 === null) return;
+    target.useBitmapCoordinateSpace(scope => {
+      const ctx = scope.context;
+      const bx1 = bitX(scope, Math.min(x1, x2)), bx2 = bitX(scope, Math.max(x1, x2));
+      const by1 = bitY(scope, Math.min(y1, y2)), by2 = bitY(scope, Math.max(y1, y2));
+      ctx.save();
+      ctx.fillStyle = this.color + '2A';
+      ctx.fillRect(bx1, by1, bx2 - bx1, by2 - by1);
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = 1.5 * scope.horizontalPixelRatio;
+      ctx.strokeRect(bx1, by1, bx2 - bx1, by2 - by1);
+      if (this.selected) {
+        [[x1, y1], [x1, y2], [x2, y1], [x2, y2]].forEach(([x, y]) => {
+          ctx.beginPath();
+          ctx.arc(bitX(scope, x), bitY(scope, y), HANDLE_R * scope.horizontalPixelRatio, 0, Math.PI * 2);
+          ctx.fillStyle = '#131722'; ctx.fill();
+          ctx.strokeStyle = this.color; ctx.lineWidth = 2 * scope.horizontalPixelRatio; ctx.stroke();
         });
+      }
+      ctx.restore();
+    });
+  }
+  hitTest(x, y) {
+    const x1 = timeToX(this.p1.time), y1 = priceToY(this.p1.price);
+    const x2 = timeToX(this.p2.time), y2 = priceToY(this.p2.price);
+    if (x1 === null || y1 === null || x2 === null || y2 === null) return null;
+    const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
+    const minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
+    if (Math.hypot(x - x1, y - y1) <= HANDLE_R + HIT_TOL) return 'p1';
+    if (Math.hypot(x - x2, y - y2) <= HANDLE_R + HIT_TOL) return 'p2';
+    if (Math.hypot(x - x1, y - y2) <= HANDLE_R + HIT_TOL) return 'p1y2';
+    if (Math.hypot(x - x2, y - y1) <= HANDLE_R + HIT_TOL) return 'p2y1';
+    if (x >= minX && x <= maxX && y >= minY && y <= maxY) return 'body';
+    return null;
+  }
+  beginDrag(handle, x, y) {
+    if (handle === 'body') {
+      this._dragOrigin = {
+        startX: x, startY: y,
+        p1x: timeToX(this.p1.time), p1y: priceToY(this.p1.price),
+        p2x: timeToX(this.p2.time), p2y: priceToY(this.p2.price),
+      };
+    }
+  }
+  drag(handle, x, y) {
+    if (handle === 'p1') this.p1 = { time: xToTime(x) ?? this.p1.time, price: yToPrice(y) ?? this.p1.price };
+    else if (handle === 'p2') this.p2 = { time: xToTime(x) ?? this.p2.time, price: yToPrice(y) ?? this.p2.price };
+    else if (handle === 'p1y2') { // top-right / bottom-left cross corner: x from p1, y from p2
+      const t = xToTime(x); if (t !== null) this.p1 = { ...this.p1, time: t };
+      const pr = yToPrice(y); if (pr !== null) this.p2 = { ...this.p2, price: pr };
+    } else if (handle === 'p2y1') {
+      const t = xToTime(x); if (t !== null) this.p2 = { ...this.p2, time: t };
+      const pr = yToPrice(y); if (pr !== null) this.p1 = { ...this.p1, price: pr };
+    } else if (handle === 'body' && this._dragOrigin) {
+      const o = this._dragOrigin;
+      const dx = x - o.startX, dy = y - o.startY;
+      const t1 = xToTime(o.p1x + dx), pr1 = yToPrice(o.p1y + dy);
+      const t2 = xToTime(o.p2x + dx), pr2 = yToPrice(o.p2y + dy);
+      if (t1 !== null && pr1 !== null) this.p1 = { time: t1, price: pr1 };
+      if (t2 !== null && pr2 !== null) this.p2 = { time: t2, price: pr2 };
+    }
+    this.refresh();
+  }
+  endDrag() { this._dragOrigin = null; }
+}
 
-        // 4. Generate Mock Data (simulating price movement)
-        function generateMockData(count) {
-            const data = [];
-            let price = 61250; // Starting price
-            let time = Math.floor(Date.now() / 1000) - (count * 60); // 1 minute bars
+/* ============================================================
+   6. PNL BOX — entry / tp / sl lines + green/red zones, fully adjustable
+   ============================================================ */
+class PnLBox extends DraggablePrimitive {
+  constructor(entryTime, entryTime2, entryPrice, tpPrice, slPrice) {
+    super();
+    this.t1 = entryTime;      // left edge
+    this.t2 = entryTime2;     // right edge
+    this.entry = entryPrice;
+    this.tp = tpPrice;
+    this.sl = slPrice;
+    this._dragOrigin = null;
+  }
+  draw(target) {
+    const xL = timeToX(this.t1), xR = timeToX(this.t2);
+    const yE = priceToY(this.entry), yTp = priceToY(this.tp), ySl = priceToY(this.sl);
+    if ([xL, xR, yE, yTp, ySl].some(v => v === null)) return;
+    target.useBitmapCoordinateSpace(scope => {
+      const ctx = scope.context;
+      const bxL = bitX(scope, Math.min(xL, xR)), bxR = bitX(scope, Math.max(xL, xR));
+      ctx.save();
+      // green (win) zone: entry -> tp
+      ctx.fillStyle = 'rgba(38,166,154,0.22)';
+      ctx.fillRect(bxL, bitY(scope, Math.min(yE, yTp)), bxR - bxL, Math.abs(bitY(scope, yTp) - bitY(scope, yE)));
+      // red (loss) zone: entry -> sl
+      ctx.fillStyle = 'rgba(239,83,80,0.22)';
+      ctx.fillRect(bxL, bitY(scope, Math.min(yE, ySl)), bxR - bxL, Math.abs(bitY(scope, ySl) - bitY(scope, yE)));
 
-            for (let i = 0; i < count; i++) {
-                const drift = (Math.random() - 0.5) * 150; // price volatility
-                const open = price;
-                const close = Math.max(0.01, open + drift);
-                const high = Math.max(open, close) + Math.random() * 50;
-                const low = Math.max(0.01, Math.min(open, close) - Math.random() * 50);
+      const drawLine = (y, color, dashed) => {
+        ctx.beginPath();
+        ctx.setLineDash(dashed ? [6 * scope.horizontalPixelRatio, 4 * scope.horizontalPixelRatio] : []);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5 * scope.verticalPixelRatio;
+        ctx.moveTo(bxL, bitY(scope, y));
+        ctx.lineTo(bxR, bitY(scope, y));
+        ctx.stroke();
+        ctx.setLineDash([]);
+      };
+      drawLine(this.entry, '#d1d4dc', false);
+      drawLine(this.tp, '#26a69a', true);
+      drawLine(this.sl, '#ef5350', true);
 
-                data.push({
-                    time: time + i * 60,
-                    open: open,
-                    high: high,
-                    low: low,
-                    close: close,
-                });
-                price = close;
-            }
-            return data;
-        }
+      // labels
+      ctx.font = `${11 * scope.verticalPixelRatio}px sans-serif`;
+      ctx.textBaseline = 'middle';
+      const rr = Math.abs(this.tp - this.entry) / Math.max(1e-9, Math.abs(this.entry - this.sl));
+      const label = (text, y, color) => {
+        ctx.fillStyle = color;
+        ctx.fillText(text, bxR + 6 * scope.horizontalPixelRatio, bitY(scope, y));
+      };
+      label(`Entry ${this.entry.toFixed(2)}`, this.entry, '#d1d4dc');
+      label(`TP ${this.tp.toFixed(2)} (+${(100 * Math.abs(this.tp - this.entry) / this.entry).toFixed(1)}%)`, this.tp, '#26a69a');
+      label(`SL ${this.sl.toFixed(2)} (-${(100 * Math.abs(this.entry - this.sl) / this.entry).toFixed(1)}%)`, this.sl, '#ef5350');
+      ctx.fillStyle = '#787b86';
+      ctx.fillText(`R:R 1:${rr.toFixed(2)}`, bxL, bitY(scope, Math.min(yTp, ySl)) - 14 * scope.verticalPixelRatio);
 
-        // Load the data
-        candlestickSeries.setData(generateMockData(200));
-
-        // 5. Handle Window Resize to keep the chart responsive
-        window.addEventListener('resize', () => {
-            chart.applyOptions({
-                width: container.clientWidth,
-                height: container.clientHeight,
-            });
+      // handles
+      if (this.selected) {
+        const dot = (x, y, color) => {
+          ctx.beginPath();
+          ctx.arc(x, y, HANDLE_R * scope.horizontalPixelRatio, 0, Math.PI * 2);
+          ctx.fillStyle = '#131722'; ctx.fill();
+          ctx.strokeStyle = color; ctx.lineWidth = 2 * scope.horizontalPixelRatio; ctx.stroke();
+        };
+        [['entry', this.entry, '#d1d4dc'], ['tp', this.tp, '#26a69a'], ['sl', this.sl, '#ef5350']].forEach(([, y, c]) => {
+          dot(bxL, bitY(scope, y), c); dot(bxR, bitY(scope, y), c);
         });
-    </script>
+        // left/right edges as real vertical lines spanning the box height —
+        // draggable along their whole length, same as the horizontal lines
+        const topY = bitY(scope, Math.min(yE, yTp, ySl)), botY = bitY(scope, Math.max(yE, yTp, ySl));
+        ctx.strokeStyle = '#2962ff';
+        ctx.lineWidth = 1.5 * scope.horizontalPixelRatio;
+        ctx.setLineDash([4 * scope.horizontalPixelRatio, 3 * scope.horizontalPixelRatio]);
+        [bxL, bxR].forEach(x => {
+          ctx.beginPath();
+          ctx.moveTo(x, topY);
+          ctx.lineTo(x, botY);
+          ctx.stroke();
+        });
+        ctx.setLineDash([]);
+      }
+      ctx.restore();
+    });
+  }
+  hitTest(x, y) {
+    const xL = timeToX(this.t1), xR = timeToX(this.t2);
+    const yE = priceToY(this.entry), yTp = priceToY(this.tp), ySl = priceToY(this.sl);
+    if ([xL, xR, yE, yTp, ySl].some(v => v === null)) return null;
+    const minX = Math.min(xL, xR), maxX = Math.max(xL, xR);
+    const inXRange = x >= minX - HIT_TOL && x <= maxX + HIT_TOL;
+
+    // horizontal lines (only within box width)
+    if (inXRange) {
+      if (Math.abs(y - yE) <= HIT_TOL) return 'entry';
+      if (Math.abs(y - yTp) <= HIT_TOL) return 'tp';
+      if (Math.abs(y - ySl) <= HIT_TOL) return 'sl';
+    }
+    // vertical edges
+    const minY = Math.min(yE, yTp, ySl), maxY = Math.max(yE, yTp, ySl);
+    const inYRange = y >= minY - HIT_TOL && y <= maxY + HIT_TOL;
+    if (inYRange) {
+      if (Math.abs(x - minX) <= HIT_TOL) return xL <= xR ? 'left' : 'right';
+      if (Math.abs(x - maxX) <= HIT_TOL) return xL <= xR ? 'right' : 'left';
+    }
+    // body
+    if (x >= minX && x <= maxX && y >= minY && y <= maxY) return 'body';
+    return null;
+  }
+  beginDrag(handle, x, y) {
+    if (handle === 'body') {
+      this._dragOrigin = {
+        startX: x, startY: y,
+        xL: timeToX(this.t1), xR: timeToX(this.t2),
+        yE: priceToY(this.entry), yTp: priceToY(this.tp), ySl: priceToY(this.sl),
+      };
+    }
+  }
+  drag(handle, x, y) {
+    if (handle === 'entry') { const p = yToPrice(y); if (p !== null) this.entry = p; }
+    else if (handle === 'tp') { const p = yToPrice(y); if (p !== null) this.tp = p; }
+    else if (handle === 'sl') { const p = yToPrice(y); if (p !== null) this.sl = p; }
+    else if (handle === 'left') { const t = xToTime(x); if (t !== null) this.t1 = t; }
+    else if (handle === 'right') { const t = xToTime(x); if (t !== null) this.t2 = t; }
+    else if (handle === 'body' && this._dragOrigin) {
+      const o = this._dragOrigin;
+      const dx = x - o.startX, dy = y - o.startY;
+      const t1 = xToTime(o.xL + dx), t2 = xToTime(o.xR + dx);
+      const pe = yToPrice(o.yE + dy), pt = yToPrice(o.yTp + dy), ps = yToPrice(o.ySl + dy);
+      if (t1 !== null) this.t1 = t1;
+      if (t2 !== null) this.t2 = t2;
+      if (pe !== null) this.entry = pe;
+      if (pt !== null) this.tp = pt;
+      if (ps !== null) this.sl = ps;
+    }
+    this.refresh();
+  }
+  endDrag() { this._dragOrigin = null; }
+}
+
+/* ============================================================
+   7. TOOL / SELECTION / DRAG STATE MANAGEMENT
+   ============================================================ */
+const primitives = [];
+let activeTool = 'cursor';
+let selected = null;
+let dragging = null;        // { primitive, handle }
+let creating = null;        // primitive currently being placed (trendline/box ghost)
+
+const hint = document.getElementById('hint');
+const toolButtons = document.querySelectorAll('.tool-btn[data-tool]');
+
+function setTool(tool) {
+  activeTool = tool;
+  toolButtons.forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
+  container.style.cursor = tool === 'cursor' ? 'default' : 'crosshair';
+  hint.textContent = {
+    cursor: 'Click a shape to select it, drag its handles to edit',
+    trendline: 'Click to place the start point, click again to finish',
+    box: 'Click to place a corner, click again for the opposite corner',
+    pnl: 'Click to drop a PnL box at that entry price',
+  }[tool];
+}
+toolButtons.forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
+
+function select(p) {
+  if (selected && selected !== p) { selected.selected = false; selected.refresh(); }
+  selected = p;
+  if (p) { p.selected = true; p.refresh(); }
+}
+function deselectAll() { if (selected) { selected.selected = false; selected.refresh(); selected = null; } }
+
+function addPrimitive(p) {
+  primitives.push(p);
+  series.attachPrimitive(p);
+  return p;
+}
+function removePrimitive(p) {
+  const i = primitives.indexOf(p);
+  if (i >= 0) primitives.splice(i, 1);
+  series.detachPrimitive(p);
+  if (selected === p) selected = null;
+}
+
+document.getElementById('deleteBtn').addEventListener('click', () => {
+  if (selected) removePrimitive(selected);
+});
+document.getElementById('clearBtn').addEventListener('click', () => {
+  [...primitives].forEach(removePrimitive);
+});
+
+/* ---- pointer handling (mouse + touch) on the chart's own container ----
+   Shared logic lives in handlePointerDown/Move/Up; mouse and touch events
+   both funnel through them.
+
+   Chart lock strategy: selecting a shape does NOT lock the chart — you can
+   still pan/zoom freely with one selected. The chart is only locked for the
+   exact duration of an active drag (handle grab or tool creation), then
+   unlocked immediately on release. This is done by directly toggling the
+   library's own handleScroll/handleScale options rather than relying on
+   preventDefault()/event order, which isn't reliable against the library's
+   internal touch handlers on its own canvas. */
+function setChartInteractive(enabled) {
+  chart.applyOptions({
+    handleScroll: enabled,
+    handleScale: enabled ? { axisPressedMouseMove: { time: true, price: false }, pinch: true, mouseWheel: true, axisDoubleClickReset: true } : false,
+  });
+}
+
+function getXY(clientX, clientY) {
+  const rect = container.getBoundingClientRect();
+  return { x: clientX - rect.left, y: clientY - rect.top };
+}
+
+function handlePointerDown(x, y, evt) {
+  if (activeTool === 'cursor') {
+    for (let i = primitives.length - 1; i >= 0; i--) {
+      const hit = primitives[i].hitTest(x, y);
+      if (hit) {
+        select(primitives[i]);
+        dragging = { primitive: primitives[i], handle: hit };
+        primitives[i].beginDrag(hit, x, y);
+        setChartInteractive(false); // lock pan/zoom only now, for the duration of this drag
+        if (evt) evt.preventDefault();
+        return;
+      }
+    }
+    deselectAll();
+    return;
+  }
+
+  // creation modes (discrete tap-to-place, not a held drag) — chart stays
+  // interactive between the two taps, e.g. so you can pan to a distant point
+  if (evt) evt.preventDefault();
+  const time = xToTime(x), price = yToPrice(y);
+  if (time === null || price === null) return;
+
+  if (activeTool === 'trendline') {
+    if (!creating) {
+      creating = addPrimitive(new TrendLine({ time, price }, { time, price }));
+    } else {
+      creating.p2 = { time, price };
+      creating.refresh();
+      creating = null;
+      setTool('cursor');
+    }
+  } else if (activeTool === 'box') {
+    if (!creating) {
+      creating = addPrimitive(new BoxDrawing({ time, price }, { time, price }));
+    } else {
+      creating.p2 = { time, price };
+      creating.refresh();
+      creating = null;
+      setTool('cursor');
+    }
+  } else if (activeTool === 'pnl') {
+    const PNL_BOX_PIXEL_WIDTH = 90; // constant on-screen size at any zoom level
+    const t2 = addPixels(x, PNL_BOX_PIXEL_WIDTH) ?? time; // ?? only hits if the chart has zero data at all
+    const box = addPrimitive(new PnLBox(time, t2, price, price * 1.02, price * 0.99));
+    select(box);
+    setTool('cursor');
+  }
+}
+
+function handlePointerMove(x, y, evt) {
+  if (dragging) {
+    if (evt) evt.preventDefault();
+    dragging.primitive.drag(dragging.handle, x, y);
+    return;
+  }
+  if (creating) {
+    if (evt) evt.preventDefault();
+    const time = xToTime(x), price = yToPrice(y);
+    if (time !== null && price !== null) {
+      creating.p2 = { time, price };
+      creating.refresh();
+    }
+    return;
+  }
+  // hover feedback in cursor mode (mouse only — touch has no hover state)
+  if (activeTool === 'cursor') {
+    let hovering = null;
+    for (let i = primitives.length - 1; i >= 0 && !hovering; i--) {
+      hovering = primitives[i].hitTest(x, y);
+    }
+    container.style.cursor = hovering ? (hovering === 'body' ? 'move' : 'pointer') : 'default';
+  }
+}
+
+function handlePointerUp() {
+  if (dragging) {
+    dragging.primitive.endDrag();
+    dragging = null;
+    setChartInteractive(true); // release the lock the instant the drag ends
+  }
+}
+
+
+// mouse
+container.addEventListener('mousedown', (e) => {
+  const { x, y } = getXY(e.clientX, e.clientY);
+  handlePointerDown(x, y, e);
+});
+window.addEventListener('mousemove', (e) => {
+  const { x, y } = getXY(e.clientX, e.clientY);
+  handlePointerMove(x, y, e);
+});
+window.addEventListener('mouseup', handlePointerUp);
+
+// touch — { passive: false } is required so preventDefault() is allowed to work
+container.addEventListener('touchstart', (e) => {
+  const t = e.touches[0];
+  if (!t) return;
+  const { x, y } = getXY(t.clientX, t.clientY);
+  handlePointerDown(x, y, e);
+}, { passive: false });
+
+window.addEventListener('touchmove', (e) => {
+  const t = e.touches[0];
+  if (!t) return;
+  const { x, y } = getXY(t.clientX, t.clientY);
+  handlePointerMove(x, y, e);
+}, { passive: false });
+
+window.addEventListener('touchend', handlePointerUp, { passive: false });
+window.addEventListener('touchcancel', handlePointerUp, { passive: false });
+
+setTool('cursor');
+
+})(); // end main()
+</script>
 </body>
 </html>
