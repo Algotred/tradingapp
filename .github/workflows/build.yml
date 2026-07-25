@@ -7,8 +7,7 @@ on:
 
 jobs:
   build:
-    # 🔥 THE FIX: Use Ubuntu 22.04 (which defaults to Java 17) instead of ubuntu-latest (24.04)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22.04   # 🟢 Guarantees Java 17 by default
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -45,10 +44,7 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
-      - name: Patch build.gradle for Java 21 compatibility (optional)
-        run: |
-          sed -i 's/sourceCompatibility JavaVersion.VERSION_17/sourceCompatibility JavaVersion.VERSION_21/' android/app/build.gradle
-          sed -i 's/targetCompatibility JavaVersion.VERSION_17/targetCompatibility JavaVersion.VERSION_21/' android/app/build.gradle
+      # ⛔️ No sourceCompatibility patch – we keep the default VERSION_17
 
       - name: Wire in native BybitSigner plugin
         run: |
