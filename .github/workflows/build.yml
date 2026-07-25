@@ -7,7 +7,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 🔥 THE FIX: Use Ubuntu 22.04 (which defaults to Java 17) instead of ubuntu-latest (24.04)
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -17,18 +18,11 @@ jobs:
         with:
           node-version: 20
 
-      # 🔥 Set JDK 17 and force JAVA_HOME
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
-
-      # 🛡️ Force Gradle to use the exact JDK path
-      - name: Configure Gradle JDK
-        run: |
-          echo "org.gradle.java.home=$JAVA_HOME" >> gradle.properties
-          echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
 
       - name: Install Capacitor
         run: |
@@ -40,7 +34,6 @@ jobs:
         run: |
           npx cap init "TradingChartApp" "com.algotred.tradingapp" --web-dir=www
 
-      # 🛠️ Create www/ and copy assets
       - name: Copy web assets into www/
         run: |
           mkdir -p www
@@ -52,13 +45,11 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
-      # 🔧 Fix Java 21 compatibility (still safe to keep)
       - name: Patch build.gradle for Java 21 compatibility (optional)
         run: |
           sed -i 's/sourceCompatibility JavaVersion.VERSION_17/sourceCompatibility JavaVersion.VERSION_21/' android/app/build.gradle
           sed -i 's/targetCompatibility JavaVersion.VERSION_17/targetCompatibility JavaVersion.VERSION_21/' android/app/build.gradle
 
-      # ✅ Wire in the native BybitSigner plugin
       - name: Wire in native BybitSigner plugin
         run: |
           PKG_DIR="android/app/src/main/java/com/algotred/tradingapp"
@@ -79,15 +70,9 @@ jobs:
       - name: Sync web assets
         run: npx cap sync android
 
-      # 🚀 Kill any existing Gradle daemon that might hold the wrong JDK
-      - name: Clean Gradle daemon
-        working-directory: android
-        run: ./gradlew --stop
-
-      # 🏗️ Build with explicit JDK path
       - name: Build debug APK
         working-directory: android
-        run: ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME
+        run: ./gradlew assembleDebug
 
       - name: Upload APK to GitHub Release
         uses: softprops/action-gh-release@v1
