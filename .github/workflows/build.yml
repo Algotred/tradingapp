@@ -33,9 +33,10 @@ jobs:
         run: |
           npx cap init "TradingChartApp" "com.algotred.tradingapp" --web-dir=www
 
-      # Copy web assets from the repository root
+      # 🛠️ FIX: Create the directory before copying into it
       - name: Copy web assets into www/
         run: |
+          mkdir -p www
           cp index.html www/
           cp style.css www/
           cp app.js www/
