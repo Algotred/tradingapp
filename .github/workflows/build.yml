@@ -1,0 +1,91 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install Capacitor
+        run: |
+          npm init -y
+          npm install @capacitor/core @capacitor/android @capacitor/screen-orientation
+          npm install -D @capacitor/cli
+
+      - name: Init Capacitor project
+        run: |
+          npx cap init "TradingChartApp" "com.yourname.tradingchartapp" --web-dir=www
+
+      - name: Copy web assets into www/
+        run: |
+          mkdir -p www
+          cp trading-app/index.html www/
+          cp trading-app/style.css www/
+          cp trading-app/app.js www/
+          cp trading-app/bybit-api.js www/
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Wire in native BybitSigner plugin
+        run: |
+          PKG_DIR="android/app/src/main/java/com/algotred/tradingapp"
+          mkdir -p "$PKG_DIR"
+          cp android-plugin/BybitSignerPlugin.java "$PKG_DIR/"
+          
+          # insert the dependency INSIDE the existing `dependencies { ... }` block
+          sed -i '/^dependencies {/a\    implementation "androidx.security:security-crypto:1.1.0"' android/app/build.gradle
+
+          MAIN_ACTIVITY=$(find android/app/src/main/java -name "MainActivity.java")
+          
+          # add the import, right after Capacitor's own BridgeActivity import
+          sed -i '/import com.getcapacitor.BridgeActivity;/a import com.algotred.tradingapp.BybitSignerPlugin;' "$MAIN_ACTIVITY"
+          
+          # replace the empty body with an onCreate override
+          perl -0777 -pi -e 's/\{\s*\}\s*$/{\n    @Override\n    public void onCreate(android.os.Bundle savedInstanceState) {\n        registerPlugin(BybitSignerPlugin.class);\n        super.onCreate(savedInstanceState);\n    }\n}\n/' "$MAIN_ACTIVITY"
+          
+          echo "----- MainActivity.java after patch -----"
+          cat "$MAIN_ACTIVITY"
+
+          # Force resolve kotlin-stdlib version
+          cat >> android/app/build.gradle << 'EOF'
+
+          configurations.all {
+              resolutionStrategy {
+                  force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.24'
+                  force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24'
+                  force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24'
+                  force 'org.jetbrains.kotlin:kotlin-stdlib-common:1.9.24'
+              }
+          }
+          EOF
+
+      - name: Sync web assets
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
