@@ -1,0 +1,83 @@
+/* ============================================================
+   PERSISTENCE (localStorage) — drawings keyed by symbol, settings and
+   journal global. Depends on nothing except STORAGE_PREFIX and the
+   TrendLine/BoxDrawing/PnLBox classes (referenced only inside function
+   bodies, resolved at call time — so load order relative to
+   primitives.js doesn't actually matter for correctness).
+   ============================================================ */
+const STORAGE_PREFIX = 'pnltools:';
+
+// Definitive test of whether localStorage actually persists in this
+// environment — some sandboxed iframe previews (like this artifact viewer)
+// partition or reset storage in ways a real deployed page wouldn't. This
+// tells us for certain rather than guessing from symptoms.
+function testLocalStoragePersistence() {
+  try {
+    const testKey = STORAGE_PREFIX + '__persisttest__';
+    localStorage.setItem(testKey, 'ok');
+    const readBack = localStorage.getItem(testKey);
+    localStorage.removeItem(testKey);
+    if (readBack !== 'ok') throw new Error('wrote "ok", read back "' + readBack + '"');
+    return true;
+  } catch (err) {
+    console.error('localStorage self-test FAILED:', err.message);
+    return false;
+  }
+}
+const STORAGE_WORKS = testLocalStoragePersistence();
+if (!STORAGE_WORKS) {
+  console.error('Drawings/settings will NOT persist across reloads or navigation in this environment — this is an environment limitation (e.g. a sandboxed preview partitioning storage), not an app bug. It should work normally once deployed as a real page.');
+}
+
+function serializePrimitive(p) {
+  if (p instanceof TrendLine) return { type: 'trendline', p1: p.p1, p2: p.p2 };
+  if (p instanceof BoxDrawing) return { type: 'box', p1: p.p1, p2: p.p2 };
+  if (p instanceof PnLBox) return { type: 'pnl', t1: p.t1, t2: p.t2, entry: p.entry, tp: p.tp, sl: p.sl };
+  return null;
+}
+function deserializePrimitive(d) {
+  if (d.type === 'trendline') return new TrendLine(d.p1, d.p2);
+  if (d.type === 'box') return new BoxDrawing(d.p1, d.p2);
+  if (d.type === 'pnl') return new PnLBox(d.t1, d.t2, d.entry, d.tp, d.sl);
+  return null;
+}
+function saveDrawings(symbol) {
+  try {
+    const serialized = primitives.map(serializePrimitive).filter(Boolean);
+    localStorage.setItem(STORAGE_PREFIX + 'drawings:' + symbol, JSON.stringify(serialized));
+  } catch (err) { console.warn('saveDrawings failed', err); }
+}
+function loadDrawings(symbol) {
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + 'drawings:' + symbol);
+    if (!raw) return [];
+    return JSON.parse(raw).map(deserializePrimitive).filter(Boolean);
+  } catch (err) { console.warn('loadDrawings failed', err); return []; }
+}
+function saveSettings(patch) {
+  try {
+    const current = loadSettings();
+    const merged = { ...current, ...patch };
+    localStorage.setItem(STORAGE_PREFIX + 'settings', JSON.stringify(merged));
+    return merged;
+  } catch (err) { console.warn('saveSettings failed', err); return patch; }
+}
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + 'settings');
+    return raw ? JSON.parse(raw) : {};
+  } catch (err) { return {}; }
+}
+
+
+// --- Trade journal storage (Phase 5) — pure read/write, kept here with the
+// rest of localStorage persistence. Reconciliation logic and rendering
+// (which need orderClient + DOM) live in app.js. ---
+function loadJournal() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_PREFIX + 'journal') || '[]'); }
+  catch (err) { console.warn('loadJournal failed', err); return []; }
+}
+function saveJournal(list) {
+  try { localStorage.setItem(STORAGE_PREFIX + 'journal', JSON.stringify(list)); }
+  catch (err) { console.warn('saveJournal failed', err); }
+}

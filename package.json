@@ -1,0 +1,15 @@
+{
+  "name": "trading-chart-app",
+  "version": "1.0.0",
+  "description": "Personal Bybit trading chart app",
+  "scripts": {
+    "build": "echo no build step needed"
+  },
+  "dependencies": {
+    "@capacitor/core": "latest",
+    "@capacitor/android": "latest"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "latest"
+  }
+}

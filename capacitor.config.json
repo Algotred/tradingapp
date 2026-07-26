@@ -1,0 +1,6 @@
+{
+  "appId": "com.abdul.tradingapp",
+  "appName": "Trad",
+  "webDir": "www",
+  "bundledWebRuntime": false
+}

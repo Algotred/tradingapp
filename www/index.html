@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Chart Tools — Trendline / Box / PnL</title>
+<script>
+  // Load the charting library with a fallback CDN, and fail loudly (not silently)
+  // if neither is reachable — better than a blank screen with a console-only error.
+  // A stalled/blocked request that never fires onload OR onerror (e.g. silently
+  // dropped by a CSP) would otherwise hang this forever, so each attempt also
+  // races against a timeout.
+  function loadScript(src, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.crossOrigin = 'anonymous'; // without this, errors thrown inside the CDN
+      // script get reported as opaque "Script error." with no message/line/stack —
+      // this unlocks real error detail, since jsdelivr/unpkg both send proper CORS headers
+      const timer = setTimeout(() => reject(new Error('timeout loading ' + src)), timeoutMs);
+      s.onload = () => { clearTimeout(timer); resolve(); };
+      s.onerror = () => { clearTimeout(timer); reject(new Error('failed to load ' + src)); };
+      document.head.appendChild(s);
+    });
+  }
+  // Global handler: surfaces whatever detail IS available for any uncaught
+  // error into the on-page debug line, instead of leaving it console-only.
+  window.addEventListener('error', (e) => {
+    const msg = e.message || 'Script error.';
+    const loc = e.filename ? ` (${e.filename.split('/').pop()}:${e.lineno}:${e.colno})` : '';
+    console.error('Uncaught error:', msg + loc, e.error);
+    const dbg = document.getElementById('debugLine');
+    if (dbg) { dbg.textContent = 'Runtime error: ' + msg + loc; dbg.style.color = '#ef5350'; }
+  });
+  function showLoadError(detail) {
+    document.body.innerHTML =
+      '<div style="padding:24px;color:#ef5350;font-family:sans-serif;background:#131722;height:100%">' +
+      '<h3>Chart library failed to load</h3>' +
+      '<p style="color:#d1d4dc">Both CDN sources for lightweight-charts were unreachable from this device/network. ' +
+      'Try a different network, or download lightweight-charts.standalone.production.js and reference it as a local file instead of a CDN link.</p>' +
+      '<p style="color:#787b86;font-size:12px">' + (detail || '') + '</p>' +
+      '</div>';
+  }
+  window.__chartsReady = loadScript('https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js', 6000)
+    .catch(() => loadScript('https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js', 6000))
+    .catch((err) => { showLoadError(err.message); throw err; });
+
+<style>
+  :root{
+    --bg:#131722; --panel:#1e222d; --border:#2a2e39; --text:#d1d4dc; --muted:#787b86;
+    --accent:#2962ff; --green:#26a69a; --red:#ef5350; --greenSoft:rgba(38,166,154,0.18); --redSoft:rgba(239,83,80,0.18);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;}
+  #app{display:flex;flex-direction:column;height:100%;}
+  #header{background:var(--panel);border-bottom:1px solid var(--border);}
+  #headerTop{display:flex;align-items:center;gap:10px;padding:8px 10px;}
+  #symbolName{font-weight:600;font-size:15px;background:none;border:1px solid transparent;color:var(--text);width:88px;padding:2px 4px;border-radius:4px;font-family:inherit;text-transform:uppercase;}
+  #symbolName:focus{outline:none;border-color:var(--accent);background:var(--bg);}
+  #lastPrice{font-size:14px;font-family:monospace;color:var(--text);}
+  #lastPrice.up{color:var(--green);}
+  #lastPrice.down{color:var(--red);}
+  #connStatus{width:8px;height:8px;border-radius:50%;margin-left:auto;flex-shrink:0;}
+  .icon-btn{background:none;border:none;color:var(--muted);font-size:15px;cursor:pointer;padding:2px 4px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;}
+  #connStatus.connected{background:var(--green);}
+  #connStatus.connecting{background:#e6a23c;animation:pulse 1s infinite;}
+  #connStatus.disconnected{background:var(--red);}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
+  #tfRow{display:flex;gap:4px;padding:0 10px 8px;overflow-x:auto;}
+  .tf-btn{
+    flex-shrink:0;padding:5px 10px;background:transparent;border:1px solid var(--border);border-radius:5px;
+    color:var(--muted);font-size:12px;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+  }
+  .tf-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+  #toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--border);}
+  .tool-btn{
+    display:flex;align-items:center;gap:5px;padding:8px 10px;background:transparent;border:1px solid var(--border);
+    border-radius:6px;color:var(--text);font-size:13px;cursor:pointer;user-select:none;
+    -webkit-tap-highlight-color:transparent;touch-action:manipulation;white-space:nowrap;
+  }
+  .tool-btn:active{background:#2a2e39;}
+  .tool-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .tool-btn.danger:active{background:var(--red);color:#fff;}
+  .sep{width:1px;height:22px;background:var(--border);margin:0 2px;}
+  #hintRow{padding:6px 10px;background:var(--panel);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted);}
+  #chart-container{position:relative;flex:1;min-height:300px;}
+  #debugLine{padding:4px 10px;font-size:10px;color:var(--muted);background:var(--panel);font-family:monospace;}
+
+  /* ---- Risk bar: kept intentionally compact (~72px total) so it doesn't
+     eat chart space — collapses two dense rows instead of a tall panel ---- */
+  #riskBar{background:var(--panel);border-top:1px solid var(--border);padding:6px 10px;flex-shrink:0;}
+  #riskBarRow1{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+  #balanceLabel{font-size:11px;color:var(--muted);white-space:nowrap;}
+  #balanceValue{color:var(--text);font-family:monospace;}
+  #simBadge{font-size:9px;font-weight:700;letter-spacing:0.5px;color:#e6a23c;border:1px solid #e6a23c;border-radius:4px;padding:1px 5px;}
+  #riskModeToggle{display:flex;margin-left:auto;border:1px solid var(--border);border-radius:5px;overflow:hidden;}
+  .mode-btn{padding:4px 8px;background:transparent;border:none;color:var(--muted);font-size:11px;cursor:pointer;touch-action:manipulation;}
+  .mode-btn.active{background:var(--accent);color:#fff;}
+  #riskValueInput{
+    width:64px;padding:4px 6px;background:var(--bg);border:1px solid var(--border);border-radius:5px;
+    color:var(--text);font-size:12px;font-family:monospace;text-align:right;
+  }
+  #riskBarRow2{display:flex;gap:8px;}
+  .side-btn{flex:1;padding:9px;border:none;border-radius:6px;font-size:14px;font-weight:600;color:#fff;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;}
+  .side-btn.long{background:var(--green);}
+  .side-btn.short{background:var(--red);}
+  .side-btn:disabled{opacity:0.4;}
+
+  /* ---- Confirmation modal: bottom sheet, kept compact and inset from
+     the screen edges — a floating card, not a full-width sheet ---- */
+  #modalOverlay{
+    display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;
+    align-items:flex-end;justify-content:center;padding:0 20px 20px;
+  }
+  #modalOverlay.open{display:flex;}
+  #confirmModal{
+    width:100%;max-width:340px;max-height:60vh;overflow-y:auto;background:var(--panel);
+    border-radius:12px;padding:12px 14px;
+  }
+  #modalHeader{display:flex;align-items:center;margin-bottom:8px;}
+  #modalTitle{font-weight:600;font-size:13px;}
+  #modalClose{margin-left:auto;background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;padding:2px 6px;}
+  #modalBody{font-size:12px;}
+  .row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);}
+  .row .k{color:var(--muted);}
+  .row .v{font-family:monospace;}
+  .row .v.long{color:var(--green);}
+  .row .v.short{color:var(--red);}
+  .warn{background:rgba(239,83,80,0.12);border:1px solid var(--red);border-radius:6px;padding:6px 8px;margin:8px 0;font-size:11px;color:var(--red);}
+  #modalFooter{display:flex;gap:8px;margin-top:10px;}
+  .modal-btn{flex:1;padding:9px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;touch-action:manipulation;}
+  .modal-btn.cancel{background:var(--border);color:var(--text);}
+  .modal-btn.confirm{background:var(--accent);color:#fff;}
+  .modal-btn.confirm:disabled{background:var(--border);color:var(--muted);cursor:not-allowed;}
+
+  /* ---- Settings / Journal sheets — same bottom-sheet pattern as Confirm ---- */
+  .sheet-overlay{
+    display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;
+    align-items:flex-end;justify-content:center;padding:0 20px 20px;
+  }
+  .sheet-overlay.open{display:flex;}
+  .sheet{width:100%;max-width:360px;max-height:75vh;overflow-y:auto;background:var(--panel);border-radius:12px;padding:12px 14px;}
+  .sheet-title{font-weight:600;font-size:13px;}
+  .sheet-body{font-size:12px;}
+  .field-label{display:block;font-size:11px;color:var(--muted);margin:10px 0 4px;}
+  .field-sep{height:1px;background:var(--border);margin:12px 0 6px;}
+  #settingsOverlay select, #settingsOverlay input{
+    width:100%;padding:7px 8px;background:var(--bg);border:1px solid var(--border);border-radius:5px;
+    color:var(--text);font-size:12px;font-family:monospace;
+  }
+  .mode-toggle{display:flex;border:1px solid var(--border);border-radius:5px;overflow:hidden;width:fit-content;}
+  .mode-toggle .mode-btn{padding:5px 12px;}
+
+  /* ---- Journal entries ---- */
+  .journal-entry{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);}
+  .journal-entry .je-main{display:flex;flex-direction:column;gap:2px;}
+  .journal-entry .je-symbol{font-size:12px;font-weight:600;}
+  .journal-entry .je-detail{font-size:10px;color:var(--muted);font-family:monospace;}
+  .journal-entry .je-pnl{font-family:monospace;font-size:13px;font-weight:600;}
+  .journal-entry .je-pnl.win{color:var(--green);}
+  .journal-entry .je-pnl.loss{color:var(--red);}
+  .journal-empty{color:var(--muted);font-size:12px;text-align:center;padding:20px 0;}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="header">
+    <div id="headerTop">
+      <input id="symbolName" value="BTCUSDT" title="Type a coin and press Enter (e.g. grass -> GRASSUSDT)">
+      <span id="lastPrice">--</span>
+      <span id="connStatus" class="connecting" title="Connecting…"></span>
+      <button id="journalBtn" class="icon-btn" title="Trade Journal">📖</button>
+      <button id="settingsBtn" class="icon-btn" title="Settings">⚙</button>
+    </div>
+    <div id="tfRow"></div>
+  </div>
+  <div id="toolbar">
+    <button class="tool-btn active" data-tool="cursor">↖ Cursor</button>
+    <button class="tool-btn" data-tool="trendline">╱ Trendline</button>
+    <button class="tool-btn" data-tool="box">▭ Box</button>
+    <button class="tool-btn" data-tool="pnl">🎯 PnL Box</button>
+    <div class="sep"></div>
+    <button class="tool-btn danger" id="deleteBtn">🗑 Delete</button>
+    <button class="tool-btn danger" id="clearBtn">Clear all</button>
+  </div>
+  <div id="hintRow"><span id="hint">Select a tool, then tap the chart</span></div>
+  <div id="chart-container"></div>
+  <div id="riskBar">
+    <div id="riskBarRow1">
+      <span id="balanceLabel">Balance: <b id="balanceValue">--</b></span>
+      <span id="simBadge" title="No API keys set — every order simulates instead of hitting Bybit">SIM</span>
+      <div id="riskModeToggle">
+        <button class="mode-btn active" data-mode="usdt">USDT</button>
+        <button class="mode-btn" data-mode="pct">%</button>
+      </div>
+      <input id="riskValueInput" type="number" step="0.1" value="1" inputmode="decimal">
+    </div>
+    <div id="riskBarRow2">
+      <button id="longBtn" class="side-btn long">Long</button>
+      <button id="shortBtn" class="side-btn short">Short</button>
+    </div>
+  </div>
+  <div id="debugLine">initializing…</div>
+</div>
+
+<div id="modalOverlay">
+  <div id="confirmModal">
+    <div id="modalHeader">
+      <span id="modalTitle">Confirm Order</span>
+      <button id="modalClose">✕</button>
+    </div>
+    <div id="modalBody"></div>
+    <div id="modalFooter">
+      <button id="modalCancel" class="modal-btn cancel">Cancel</button>
+      <button id="modalConfirm" class="modal-btn confirm">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div id="settingsOverlay" class="sheet-overlay">
+  <div class="sheet">
+    <div id="modalHeader">
+      <span class="sheet-title">Settings</span>
+      <button id="settingsClose">✕</button>
+    </div>
+    <div class="sheet-body">
+      <label class="field-label">Default Symbol</label>
+      <input id="setDefaultSymbol" type="text" title="Type a coin (e.g. grass -> GRASSUSDT)">
+
+      <label class="field-label">Default Timeframe</label>
+      <select id="setDefaultTimeframe"></select>
+
+      <label class="field-label">Default Risk Mode</label>
+      <div id="setRiskModeToggle" class="mode-toggle">
+        <button class="mode-btn" data-mode="usdt">USDT</button>
+        <button class="mode-btn" data-mode="pct">%</button>
+      </div>
+
+      <label class="field-label">Default Risk Value</label>
+      <input id="setRiskValue" type="number" step="0.1">
+
+      <label class="field-label">Default PnL Box — TP %</label>
+      <input id="setDefaultTpPct" type="number" step="0.1">
+
+      <label class="field-label">Default PnL Box — SL %</label>
+      <input id="setDefaultSlPct" type="number" step="0.1">
+
+      <label class="field-label">Chart Area Height (1–10, decimals OK — blank = current default size)</label>
+      <input id="setChartHeightScale" type="number" min="1" max="10" step="0.1" placeholder="Default">
+
+      <div class="field-sep"></div>
+      <div class="warn" style="margin:4px 0 10px;">
+        API keys are held in memory only for this session — never saved to disk. Reload the page and they're gone. Leave blank to stay in simulation mode.
+      </div>
+      <label class="field-label">Bybit API Key (session only)</label>
+      <input id="setApiKey" type="text" autocomplete="off" placeholder="Leave blank for simulation">
+      <label class="field-label">Bybit API Secret (session only)</label>
+      <input id="setApiSecret" type="password" autocomplete="off" placeholder="Leave blank for simulation">
+    </div>
+    <div id="modalFooter">
+      <button id="settingsSave" class="modal-btn confirm">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="journalOverlay" class="sheet-overlay">
+  <div class="sheet">
+    <div id="modalHeader">
+      <span class="sheet-title">Trade Journal</span>
+      <button id="journalClose">✕</button>
+    </div>
+    <div id="journalBody" class="sheet-body"></div>
+  </div>
+</div>
+
+<!-- Load order matters: each file below is a plain (non-module) script, so
+     they all share one global top-level scope — later files can reference
+     earlier files' classes/functions by name directly, same as if this
+     were still one file. data-source/persistence/trading/primitives only
+     DEFINE things (no chart-library calls), so they load immediately,
+     independent of the CDN wait; app.js is the only one gated behind
+     window.__chartsReady, since it's the part that actually touches
+     LightweightCharts.createChart(). -->
+<script src="js/data-source.js"></script>
+<script src="js/persistence.js"></script>
+<script src="js/trading.js"></script>
+<script src="js/native-signer.js"></script>
+<script src="js/primitives.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,56 @@
+name: Build Android APK
+
+# Runs automatically on every push to main, and can also be triggered
+# manually from the GitHub web UI (Actions tab -> this workflow -> Run
+# workflow) — useful from a phone where pushing a throwaway commit just
+# to trigger a build is annoying.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java (required by Gradle/Android build tools)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install npm dependencies
+        run: npm install
+
+      # The android/ native project is intentionally NOT committed to git —
+      # it's regenerated fresh on every CI run from capacitor.config.json.
+      # This keeps the repo (and anything Termux needs to hold) small.
+      - name: Add Android platform
+        run: npx cap add android
+
+      # Injects native-plugins/BybitSignerPlugin.java into the freshly
+      # generated project and registers it in MainActivity — see
+      # scripts/inject-plugin.sh for why this runs every build instead
+      # of android/ being committed with the plugin already in place.
+      - name: Inject BybitSigner native plugin
+        run: bash scripts/inject-plugin.sh
+
+      - name: Sync web assets into native project
+        run: npx cap sync android
+
+      - name: Build debug APK
+        run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+
+      - name: Upload APK as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
