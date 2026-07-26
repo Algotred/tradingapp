@@ -19,13 +19,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
-      - name: Setup Java (required by Gradle/Android build tools)
+      - name: Setup Java (required by Gradle/Android build tools — 21 to match
+          what Capacitor 8 actually generates in build.gradle by default)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Install npm dependencies
         run: npm install
