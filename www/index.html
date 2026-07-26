@@ -40,9 +40,15 @@
       '<p style="color:#787b86;font-size:12px">' + (detail || '') + '</p>' +
       '</div>';
   }
-  window.__chartsReady = loadScript('https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js', 6000)
+  // Try the locally bundled copy first (no network dependency at all — this
+  // is what a compiled native app should rely on for something this
+  // fundamental to booting) before falling back to a CDN, which is only
+  // realistically useful for quick testing in a plain browser.
+  window.__chartsReady = loadScript('js/vendor/lightweight-charts.standalone.production.js', 4000)
+    .catch(() => loadScript('https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js', 6000))
     .catch(() => loadScript('https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js', 6000))
     .catch((err) => { showLoadError(err.message); throw err; });
+</script>
 
 <style>
   :root{
