@@ -12,6 +12,13 @@ await window.__chartsReady; // wait for the CDN script to actually finish loadin
 // time values into the reserved future whitespace, where coordinateToTime()
 // alone returns null because there's no real candle there yet.
 window.barIntervalSeconds = 86400;
+// Load saved credentials on startup
+const savedKey = localStorage.getItem('bybitApiKey');
+const savedSecret = localStorage.getItem('bybitApiSecret');
+if (savedKey && savedSecret) {
+  orderClient.apiKey = savedKey;
+  orderClient.apiSecret = savedSecret;
+}
 function computeBarInterval(data) {
   if (data.length >= 2) barIntervalSeconds = data[data.length - 1].time - data[data.length - 2].time;
 }
@@ -718,6 +725,10 @@ document.getElementById('settingsSave').addEventListener('click', () => {
   // apply immediately, session-memory only — never written to localStorage
   orderClient.apiKey = document.getElementById('setApiKey').value.trim();
   orderClient.apiSecret = document.getElementById('setApiSecret').value.trim();
+  // After setting orderClient.apiKey and apiSecret
+  localStorage.setItem('bybitApiKey', orderClient.apiKey);
+  localStorage.setItem('bybitApiSecret', orderClient.apiSecret);
+
 
   // reflect the new risk defaults in the always-visible risk bar too
   riskMode = settingsRiskMode;
