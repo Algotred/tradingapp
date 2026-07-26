@@ -31,6 +31,18 @@ jobs:
       - name: Install npm dependencies
         run: npm install
 
+      # Without this, every CI run signs the APK with a brand-new random
+      # debug key (GitHub's runners are fully ephemeral, and Gradle
+      # auto-generates ~/.android/debug.keystore if one doesn't exist).
+      # Android refuses to install an APK over an existing app with a
+      # DIFFERENT signature — that's what "App not installed" was. This
+      # restores one committed, permanent keystore every run so builds
+      # keep the same signature and always install cleanly as updates.
+      - name: Restore consistent debug keystore
+        run: |
+          mkdir -p ~/.android
+          cp keystores/debug.keystore ~/.android/debug.keystore
+
       # The android/ native project is intentionally NOT committed to git —
       # it's regenerated fresh on every CI run from capacitor.config.json.
       # This keeps the repo (and anything Termux needs to hold) small.
