@@ -11,7 +11,7 @@ await window.__chartsReady; // wait for the CDN script to actually finish loadin
 // bar interval in seconds, derived from the actual data — used to extrapolate
 // time values into the reserved future whitespace, where coordinateToTime()
 // alone returns null because there's no real candle there yet.
-window.barIntervalSeconds = 86400;
+let barIntervalSeconds = 86400;
 function computeBarInterval(data) {
   if (data.length >= 2) barIntervalSeconds = data[data.length - 1].time - data[data.length - 2].time;
 }
@@ -32,15 +32,6 @@ function xToTime(x) {
 }
 function priceToY(p) { return series.priceToCoordinate(p); }
 function yToPrice(y) { return series.coordinateToPrice(y); }
-// These four are called directly from primitives.js — this file's content
-// is wrapped in an async IIFE (see top of file), so plain `let`/`function`
-// declarations here are private to that closure and invisible to other
-// <script> tags no matter the load order. Explicit window exposure is what
-// actually makes them callable from primitives.js/trading.js.
-window.timeToX = timeToX;
-window.xToTime = xToTime;
-window.priceToY = priceToY;
-window.yToPrice = yToPrice;
 
 // shift an x-coordinate by a fixed number of *screen pixels* and convert back
 // to a time value — this is what keeps the PnL box a constant visual size
@@ -50,11 +41,9 @@ function addPixels(xRef, pixels) { return xToTime(xRef + pixels); }
 
 function bitX(scope, mediaX) { return Math.round(mediaX * scope.horizontalPixelRatio); }
 function bitY(scope, mediaY) { return Math.round(mediaY * scope.verticalPixelRatio); }
-window.bitX = bitX;
-window.bitY = bitY;
 
-window.HANDLE_R = 5;       // px radius for the visible endpoint handle dot
-window.HIT_TOL = 14;       // px tolerance for hit-testing — generous for touch/fingertip accuracy
+const HANDLE_R = 5;       // px radius for the visible endpoint handle dot
+const HIT_TOL = 14;       // px tolerance for hit-testing — generous for touch/fingertip accuracy
 
 /* ============================================================
    5. CHART SETUP
@@ -141,10 +130,10 @@ const symbolNameEl = document.getElementById('symbolName');
 const lastPriceEl = document.getElementById('lastPrice');
 const connStatusEl = document.getElementById('connStatus');
 const savedSettings = loadSettings();
-window.currentSymbol = savedSettings.defaultSymbol || 'BTCUSDT';
+let currentSymbol = savedSettings.defaultSymbol || 'BTCUSDT';
 let currentTimeframe = savedSettings.defaultTimeframe || '15m';
 let activeStream = null;
-window.lastDisplayedPrice = null;
+let lastDisplayedPrice = null;
 
 // Free-form coin entry, not a fixed list: normalizes casing and appends the
 // USDT quote Bybit's linear perpetuals use, unless a recognized quote
@@ -181,7 +170,7 @@ function updateLastPrice(price) {
   lastDisplayedPrice = price;
 }
 
-window.chartData = []; // real candles + trailing future-whitespace points, kept in sync with the series
+let chartData = []; // real candles + trailing future-whitespace points, kept in sync with the series
 
 // series.update() requires the new point's time to be >= the series' last
 // existing point — but our series always ends with future whitespace points
@@ -264,7 +253,7 @@ new ResizeObserver(entries => {
    ============================================================ */
 const primitives = [];
 let activeTool = 'cursor';
-window.selected = null;
+let selected = null;
 let dragging = null;        // { primitive, handle }
 let creating = null;        // primitive currently being placed (trendline/box ghost)
 
@@ -483,7 +472,7 @@ setTool('cursor');
    Confirm now goes through the real, correctly-signed BybitOrderClient —
    it just has no live keys by default, so every call simulates.
    ============================================================ */
-window.mockBalance = savedSettings.mockBalance ?? 10000; // used both as the simulated balance and the fallback display
+let mockBalance = savedSettings.mockBalance ?? 10000; // used both as the simulated balance and the fallback display
 async function refreshBalanceDisplay() {
   try {
     const resp = await orderClient.getWalletBalance();
