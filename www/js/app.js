@@ -83,6 +83,19 @@ try {
   // hadn't settled to its final size at the moment createChart() ran
   chart.resize(container.clientWidth || 320, container.clientHeight || 400);
 
+  // This whole app is written against the v4 API (addCandlestickSeries).
+  // v5 removed it in favor of addSeries(SeriesType, options) — if the
+  // bundled/CDN'd library is v5+, fail here with a specific, actionable
+  // message instead of a generic crash three calls later.
+  if (typeof chart.addCandlestickSeries !== 'function') {
+    throw new Error(
+      "Loaded lightweight-charts build doesn't have addCandlestickSeries — " +
+      "this app needs v4.x (v5 renamed/removed this method). Check that " +
+      "js/vendor/lightweight-charts.standalone.production.js was downloaded " +
+      "as version 4.1.3, not an unpinned/latest URL."
+    );
+  }
+
   series = chart.addCandlestickSeries({
     upColor: '#26a69a', downColor: '#ef5350',
     borderVisible: false,
