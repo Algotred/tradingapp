@@ -255,12 +255,20 @@
 
       <div class="field-sep"></div>
       <div class="warn" style="margin:4px 0 10px;">
-        API keys are held in memory only for this session — never saved to disk. Reload the page and they're gone. Leave blank to stay in simulation mode.
+        API keys are now saved on this device (this app's own private storage,
+        not shared with other apps/sites) so you don't have to re-enter them
+        every launch. They are stored as plain text at the JS layer — reasonable
+        for a personal-use app, but not full OS-level encryption (Android
+        Keystore). Leave both blank to stay in simulation mode.
       </div>
-      <label class="field-label">Bybit API Key (session only)</label>
+      <label class="field-label">Bybit API Key</label>
       <input id="setApiKey" type="text" autocomplete="off" placeholder="Leave blank for simulation">
-      <label class="field-label">Bybit API Secret (session only)</label>
+      <label class="field-label">Bybit API Secret</label>
       <input id="setApiSecret" type="password" autocomplete="off" placeholder="Leave blank for simulation">
+      <label class="field-label" style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+        <input id="setUseTestnet" type="checkbox" style="width:auto;">
+        Use Bybit Testnet (safe fake-money sandbox — verify order flow here before ever using a real mainnet key)
+      </label>
     </div>
     <div id="modalFooter">
       <button id="settingsSave" class="modal-btn confirm">Save</button>

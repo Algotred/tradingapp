@@ -12,14 +12,24 @@
    symbol changes, and every PnL box price edit snaps to it.
    ============================================================ */
 let currentTickSize = 0.01;
+
+// Derives real decimal precision directly from the instrument's actual tick
+// size — e.g. 0.0001 -> 4 decimals, 0.000001 -> 6 decimals — instead of a
+// fixed/guessed precision. Used for both price snapping and price display,
+// so a coin priced at 0.000002 shows correctly instead of rounding to "0.00".
+function decimalsForTick(tickSize) {
+  if (!tickSize) return 2;
+  return (tickSize.toString().split('.')[1] || '').length;
+}
+
 function snapToTick(price, tickSize = currentTickSize) {
   if (!tickSize) return price;
-  const decimals = (tickSize.toString().split('.')[1] || '').length;
+  const decimals = decimalsForTick(tickSize);
   return parseFloat((Math.round(price / tickSize) * tickSize).toFixed(decimals));
 }
 function snapToStep(qty, step) {
   if (!step) return qty;
-  const decimals = (step.toString().split('.')[1] || '').length;
+  const decimals = decimalsForTick(step);
   // round DOWN to the nearest valid step — never round up on quantity,
   // since that would risk more than the user's stated risk amount
   return parseFloat((Math.floor(qty / step) * step).toFixed(decimals));
@@ -136,11 +146,22 @@ async function hmacSha256Hex(message, secret) {
 }
 
 class BybitOrderClient {
-  constructor({ apiKey = '', apiSecret = '', testnet = true } = {}) {
+  // testnet defaults to false: a real API key you generate on your actual
+  // Bybit account only works against mainnet — testnet is a completely
+  // separate, opt-in sandbox with its own separate account/key database.
+  // Sending a real key to the testnet endpoint (the previous default here)
+  // is exactly what produced "API key is invalid" — Bybit was correctly
+  // rejecting a mainnet key on a system it doesn't exist on.
+  constructor({ apiKey = '', apiSecret = '', testnet = false } = {}) {
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
+    this.testnet = testnet;
     this.baseUrl = testnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
     this._mockOrders = []; // in-memory simulated order/fill history, session-only
+  }
+  setNetwork(testnet) {
+    this.testnet = testnet;
+    this.baseUrl = testnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
   }
   get isLive() { return !!(this.apiKey && this.apiSecret); }
 
@@ -240,5 +261,12 @@ class BybitOrderClient {
   }
 }
 
-const orderClient = new BybitOrderClient(); // no keys yet — every call simulates until Settings (Phase 5) adds key input
+// Restore any previously saved credentials/network choice immediately —
+// loadSettings() is pure localStorage read, safe to call synchronously here.
+const _savedOrderSettings = loadSettings();
+const orderClient = new BybitOrderClient({
+  apiKey: _savedOrderSettings.apiKey || '',
+  apiSecret: _savedOrderSettings.apiSecret || '',
+  testnet: _savedOrderSettings.useTestnet || false,
+});
 

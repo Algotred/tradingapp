@@ -199,15 +199,138 @@ class BybitDataSource {
     }
   }
 
-  // Bybit's real streaming path is a public WebSocket
-  // (wss://stream.bybit.com/v5/public/linear) — that's a larger, separate
-  // piece of wiring (subscribe/ping-pong/resubscribe-on-symbol-change).
-  // For now this falls through to the same simulated tick stream the mock
-  // uses, layered on top of whatever REAL historical candles were loaded
-  // above, so at minimum the chart's history and instrument data are real
-  // even before the live WS layer is built out.
+  // Bybit's real streaming path is a public WebSocket. See
+  // BybitWebSocketStream below for the actual implementation — this just
+  // delegates to it, matching the identical {onCandle, onStatus} handler
+  // interface the mock stream used, so nothing above this layer changes.
   subscribeKlines(symbol, timeframe, handlers, seedCandle) {
-    return this._mock.subscribeKlines(symbol, timeframe, handlers, seedCandle);
+    return new BybitWebSocketStream(symbol, timeframe, handlers, seedCandle);
+  }
+}
+
+/* ============================================================
+   2c. BYBIT WEBSOCKET STREAM — real live kline data
+   ------------------------------------------------------------
+   wss://stream.bybit.com/v5/public/linear, topic kline.{interval}.{symbol}.
+   Bybit sends "confirm": false while a bar is still forming and "confirm":
+   true once it closes — that maps directly to isNewBar, in the same shape
+   ReconnectingStream (the mock) already used, so BybitDataSource can swap
+   between them with zero changes anywhere else in the app.
+
+   Ping/pong: Bybit's own reference client libraries default to ~10-20s
+   ping intervals; general WebSocket practice recommends 20-30s. This uses
+   a 20s ping / 10s pong-timeout, matching both.
+   ============================================================ */
+class BybitWebSocketStream {
+  constructor(symbol, timeframe, handlers, seedCandle) {
+    this.symbol = symbol;
+    this.timeframe = timeframe;
+    this.handlers = handlers;
+    this._closed = false;
+    this._ws = null;
+    this._retryDelay = 1000;
+    this._pingTimer = null;
+    this._pongTimeout = null;
+    // Bybit's WS `start` field is milliseconds; seedCandle.time (from REST)
+    // is seconds, matching this app's internal convention — convert once
+    // here so the very first WS message compares correctly and continues
+    // the same last real bar rather than treating it as a new one.
+    this._lastBarStart = seedCandle ? seedCandle.time * 1000 : null;
+    this._connect();
+  }
+
+  _connect() {
+    if (this._closed) return;
+    this.handlers.onStatus('connecting');
+
+    const wsInterval = BYBIT_KLINE_INTERVAL[this.timeframe];
+    const topic = `kline.${wsInterval}.${this.symbol}`;
+
+    try {
+      this._ws = new WebSocket('wss://stream.bybit.com/v5/public/linear');
+    } catch (err) {
+      console.warn('BybitWebSocketStream: failed to construct WebSocket:', err);
+      this._scheduleReconnect();
+      return;
+    }
+
+    this._ws.onopen = () => {
+      if (this._closed) return;
+      this._retryDelay = 1000; // reset backoff on a successful connect
+      this._ws.send(JSON.stringify({ op: 'subscribe', args: [topic] }));
+      this._startHeartbeat();
+    };
+
+    this._ws.onmessage = (event) => {
+      if (this._closed) return;
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+
+      if (msg.op === 'pong' || msg.ret_msg === 'pong') {
+        clearTimeout(this._pongTimeout);
+        return;
+      }
+      if (msg.op === 'subscribe') {
+        if (msg.success) this.handlers.onStatus('connected');
+        else { console.warn('BybitWebSocketStream: subscribe failed:', msg); this.handlers.onStatus('disconnected'); }
+        return;
+      }
+      if (msg.topic && msg.topic.startsWith('kline.') && Array.isArray(msg.data)) {
+        for (const k of msg.data) {
+          const barTime = Math.floor(Number(k.start) / 1000); // ms -> seconds
+          const isNewBar = this._lastBarStart !== null && Number(k.start) !== this._lastBarStart;
+          this._lastBarStart = Number(k.start);
+          this.handlers.onCandle({
+            time: barTime,
+            open: Number(k.open), high: Number(k.high), low: Number(k.low), close: Number(k.close),
+          }, isNewBar);
+        }
+      }
+    };
+
+    this._ws.onerror = () => {
+      // onclose fires immediately after in virtually every browser/WebView
+      // implementation — that single path handles the actual reconnect.
+    };
+
+    this._ws.onclose = () => {
+      if (this._closed) return;
+      this._stopHeartbeat();
+      this.handlers.onStatus('disconnected');
+      this._scheduleReconnect();
+    };
+  }
+
+  _startHeartbeat() {
+    this._stopHeartbeat();
+    this._pingTimer = setInterval(() => {
+      if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+        this._ws.send(JSON.stringify({ op: 'ping' }));
+        this._pongTimeout = setTimeout(() => {
+          console.warn('BybitWebSocketStream: no pong within 10s, forcing reconnect');
+          if (this._ws) this._ws.close();
+        }, 10000);
+      }
+    }, 20000);
+  }
+  _stopHeartbeat() {
+    clearInterval(this._pingTimer);
+    clearTimeout(this._pongTimeout);
+  }
+
+  _scheduleReconnect() {
+    if (this._closed) return;
+    setTimeout(() => {
+      if (this._closed) return;
+      this._retryDelay = Math.min(this._retryDelay * 2, 16000); // exponential backoff, capped
+      this._connect();
+    }, this._retryDelay);
+  }
+
+  close() {
+    this._closed = true;
+    this._stopHeartbeat();
+    if (this._ws) { try { this._ws.close(); } catch (err) { /* already closing/closed */ } this._ws = null; }
   }
 }
 

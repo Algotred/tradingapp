@@ -12,13 +12,6 @@ await window.__chartsReady; // wait for the CDN script to actually finish loadin
 // time values into the reserved future whitespace, where coordinateToTime()
 // alone returns null because there's no real candle there yet.
 window.barIntervalSeconds = 86400;
-// Load saved credentials on startup
-const savedKey = localStorage.getItem('bybitApiKey');
-const savedSecret = localStorage.getItem('bybitApiSecret');
-if (savedKey && savedSecret) {
-  orderClient.apiKey = savedKey;
-  orderClient.apiSecret = savedSecret;
-}
 function computeBarInterval(data) {
   if (data.length >= 2) barIntervalSeconds = data[data.length - 1].time - data[data.length - 2].time;
 }
@@ -180,7 +173,11 @@ symbolNameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') commitS
 symbolNameEl.addEventListener('blur', commitSymbolInput);
 
 function updateLastPrice(price) {
-  lastPriceEl.textContent = price.toFixed(currentTickSize < 1 ? 2 : 0);
+  // real precision derived from the instrument's actual tick size — fixes
+  // low-price coins (e.g. GRASSUSDT at 0.34 showing as "0.34" when the real
+  // tradeable precision is 0.3453) and very small-value coins (e.g.
+  // 0.000002, which would round to "0.00" under the old fixed 2-decimal rule)
+  lastPriceEl.textContent = price.toFixed(decimalsForTick(currentTickSize));
   if (lastDisplayedPrice !== null) {
     lastPriceEl.classList.remove('up', 'down');
     lastPriceEl.classList.add(price >= lastDisplayedPrice ? 'up' : 'down');
@@ -228,6 +225,10 @@ async function loadSymbol(symbol, timeframe) {
       dataSource.getInstrumentInfo(symbol),
     ]);
     currentTickSize = info.tickSize;
+    // the chart's own Y-axis labels default to lightweight-charts' generic
+    // precision otherwise — this keeps them matching the real instrument's
+    // tick size too (same fix as updateLastPrice, applied to the chart itself)
+    series.applyOptions({ priceFormat: { type: 'price', precision: decimalsForTick(currentTickSize), minMove: currentTickSize } });
     chartData = appendFutureWhitespace(klines, FUTURE_WHITESPACE_BARS);
     series.setData(chartData);
     chart.timeScale().fitContent();
@@ -693,6 +694,7 @@ function openSettings() {
   document.getElementById('setChartHeightScale').value = s.chartHeightScale ?? '';
   document.getElementById('setApiKey').value = orderClient.apiKey;
   document.getElementById('setApiSecret').value = orderClient.apiSecret;
+  document.getElementById('setUseTestnet').checked = orderClient.testnet;
 
   settingsOverlay.classList.add('open');
 }
@@ -713,22 +715,25 @@ document.getElementById('settingsSave').addEventListener('click', () => {
   const newSlPct = parseFloat(document.getElementById('setDefaultSlPct').value) || 1.0;
   const rawScale = document.getElementById('setChartHeightScale').value.trim();
   const newChartHeightScale = rawScale === '' ? null : parseFloat(rawScale);
+  const newApiKey = document.getElementById('setApiKey').value.trim();
+  const newApiSecret = document.getElementById('setApiSecret').value.trim();
+  const newUseTestnet = document.getElementById('setUseTestnet').checked;
 
   saveSettings({
     defaultSymbol: newSymbol, defaultTimeframe: newTimeframe,
     riskMode: settingsRiskMode, riskValue: newRiskValue,
     defaultTpPct: newTpPct, defaultSlPct: newSlPct,
     chartHeightScale: newChartHeightScale,
+    // now persisted per your request — see the in-modal warning about what
+    // that tradeoff actually means (this app's own private storage, plain
+    // text at the JS layer, not OS-level Keystore encryption)
+    apiKey: newApiKey, apiSecret: newApiSecret, useTestnet: newUseTestnet,
   });
   applyChartHeightScale(newChartHeightScale);
 
-  // apply immediately, session-memory only — never written to localStorage
-  orderClient.apiKey = document.getElementById('setApiKey').value.trim();
-  orderClient.apiSecret = document.getElementById('setApiSecret').value.trim();
-  // After setting orderClient.apiKey and apiSecret
-  localStorage.setItem('bybitApiKey', orderClient.apiKey);
-  localStorage.setItem('bybitApiSecret', orderClient.apiSecret);
-
+  orderClient.apiKey = newApiKey;
+  orderClient.apiSecret = newApiSecret;
+  orderClient.setNetwork(newUseTestnet);
 
   // reflect the new risk defaults in the always-visible risk bar too
   riskMode = settingsRiskMode;
