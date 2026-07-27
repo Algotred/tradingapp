@@ -195,13 +195,26 @@ window.chartData = []; // real candles + trailing future-whitespace points, kept
 function applyLiveCandle(candle, isNewBar) {
   let realEnd = 0;
   while (realEnd < chartData.length && chartData[realEnd].open !== undefined) realEnd++;
+
+  // Defensive guard: after the app sits backgrounded for a while, a
+  // reconnecting WebSocket can deliver a candle referencing a moment
+  // that's now stale relative to what's already shown. Passing an
+  // out-of-order point to series.setData() throws deep inside the
+  // charting library ("Value is null") — safer to just ignore it here.
+  if (realEnd > 0 && candle.time < chartData[realEnd - 1].time) {
+    console.warn('Ignoring stale live candle (older than last shown bar):', candle);
+    return;
+  }
+
   if (isNewBar) {
-    // the first whitespace slot's time is always exactly last-real-time +
-    // interval — i.e. it was already reserved for precisely this new bar.
-    // Overwrite it in place rather than inserting, which would leave a
-    // duplicate/out-of-order timestamp sitting right next to it.
-    if (realEnd < chartData.length) chartData[realEnd] = candle;
-    else chartData.push(candle); // no whitespace left (shouldn't normally happen)
+    // Rebuild the whitespace tail fresh, relative to this candle's actual
+    // time, instead of overwriting one specific slot — a background gap
+    // can jump the live time forward by more than one bar interval, which
+    // would otherwise leave old whitespace points sitting stale/out-of-
+    // order right after the overwritten one.
+    const realCandles = chartData.slice(0, realEnd);
+    realCandles.push(candle);
+    chartData = appendFutureWhitespace(realCandles, FUTURE_WHITESPACE_BARS);
   } else if (realEnd > 0) {
     chartData[realEnd - 1] = candle; // update the still-forming last real candle in place
   } else {
@@ -566,15 +579,29 @@ document.getElementById('longBtn').addEventListener('click', () => openConfirmMo
 document.getElementById('shortBtn').addEventListener('click', () => openConfirmModal('short'));
 document.getElementById('modalClose').addEventListener('click', closeModal);
 document.getElementById('modalCancel').addEventListener('click', closeModal);
+const BYBIT_LEVERAGE_NOT_MODIFIED = 110043; // Bybit's code for "already at that value" — not a real failure
+const _lastConfirmedLeverage = {}; // { symbol: leverage } — lets repeat orders skip a redundant round-trip
+
 document.getElementById('modalConfirm').addEventListener('click', async () => {
   if (!pendingTrade || !pendingTrade.valid) return;
   const p = pendingTrade;
   modalConfirm.disabled = true;
   modalConfirm.textContent = 'Placing…';
   try {
-    // required leverage gets set BEFORE the order per spec, then injected via the order's implicit leverage
-    const levResp = await orderClient.setLeverage(p.symbol, Math.ceil(p.requiredLeverage));
-    if (levResp.retCode !== 0) throw new Error('setLeverage: ' + levResp.retMsg);
+    const targetLeverage = Math.ceil(p.requiredLeverage);
+    // Speed optimization for scalping: skip the network round-trip entirely
+    // if we already know this symbol is at the right leverage — otherwise
+    // every single order pays for a redundant setLeverage call.
+    if (_lastConfirmedLeverage[p.symbol] !== targetLeverage) {
+      const levResp = await orderClient.setLeverage(p.symbol, targetLeverage);
+      // retCode 110043 = "leverage not modified" = already correct, NOT a
+      // failure — treating it as fatal here previously blocked valid orders
+      // whenever leverage happened to already match (confirmed real bug).
+      if (levResp.retCode !== 0 && levResp.retCode !== BYBIT_LEVERAGE_NOT_MODIFIED) {
+        throw new Error('setLeverage: ' + levResp.retMsg);
+      }
+      _lastConfirmedLeverage[p.symbol] = targetLeverage;
+    }
     const orderResp = await orderClient.createOrder(p);
     if (orderResp.retCode !== 0) throw new Error('createOrder: ' + orderResp.retMsg);
     const mode = orderClient.isLive ? 'LIVE' : 'SIMULATED';
@@ -767,5 +794,23 @@ loadSymbol(currentSymbol, currentTimeframe);
 const countdownBadge = new CandleCountdownBadge();
 series.attachPrimitive(countdownBadge);
 setInterval(() => countdownBadge.refresh(), 1000);
+
+// Mobile OS/WebView power-saving throttles or suspends JS timers and can
+// leave the WebSocket connection in an unpredictable state while the app
+// sits backgrounded — the connection object might report "open" while
+// actually stale. Rather than trust it, force a full clean reload (fresh
+// REST candles + fresh WS reconnect) the moment the app becomes visible
+// again, so nothing here has to guess how long it was away or what state
+// a resumed connection is really in.
+let _wasHidden = false;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    _wasHidden = true;
+  } else if (_wasHidden) {
+    _wasHidden = false;
+    console.log('App resumed from background — reloading for a clean, consistent data state.');
+    loadSymbol(currentSymbol, currentTimeframe);
+  }
+});
 
 })(); // end main()
