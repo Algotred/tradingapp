@@ -45,7 +45,15 @@ public class BybitSignerPlugin extends Plugin {
 
             StringBuilder hex = new StringBuilder();
             for (byte b : rawHmac) {
-                hex.append(String.format("%02x", b));
+                // CRITICAL: Java bytes are signed (-128..127). Without masking,
+                // String.format("%02x", b) sign-extends any byte with its high
+                // bit set into an 8-hex-digit "ffffffXX" garbage sequence
+                // instead of the intended 2 hex digits — corrupting the
+                // signature on almost every real HMAC output (a 32-byte
+                // SHA-256 result has effectively a 100% chance at least one
+                // byte triggers this). `& 0xff` forces the correct unsigned
+                // 0-255 range before formatting.
+                hex.append(String.format("%02x", b & 0xff));
             }
 
             JSObject result = new JSObject();

@@ -54,9 +54,9 @@ function snapToStep(qty, step) {
      entry fee + SL fee). Fees reduce the win and *add to* the loss,
      since they're paid either way.
    ============================================================ */
-const FEE_MAKER = 0.0002;   // 0.020%
-const FEE_TAKER = 0.00055;  // 0.055%
-const MARKET_THRESHOLD = 0.0002; // 0.02% — within this of current price => Market order
+const FEE_MAKER = 0.00005;   // 0.020%
+const FEE_TAKER = 0.000055;  // 0.055%
+const MARKET_THRESHOLD = 0.00005; // 0.02% — within this of current price => Market order
 const ENTRY_DEVIATION_LIMIT = 0.10; // 10% — entry must be within this of current price
 
 // Net R:R depends only on entry/tp/sl and whether entry fills Market or

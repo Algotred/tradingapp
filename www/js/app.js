@@ -124,7 +124,7 @@ try {
 // it doesn't make the area time-addressable). The library's own documented
 // fix is WhitespaceData: time-only points with no OHLC, appended after the
 // real data, which makes that future range genuinely interactive.
-const FUTURE_WHITESPACE_BARS = 60;
+const FUTURE_WHITESPACE_BARS = 50;
 function appendFutureWhitespace(data, n) {
   if (data.length < 2) return data;
   const interval = data[data.length - 1].time - data[data.length - 2].time;
@@ -515,7 +515,19 @@ async function refreshBalanceDisplay() {
       if (orderClient.isLive) mockBalance = bal; // keep risk math consistent with whatever's actually displayed
       return;
     }
-  } catch (err) { console.warn('refreshBalanceDisplay failed:', err); }
+    // A non-zero retCode isn't a thrown error, so it silently fell through
+    // to the mock fallback below with zero indication anything was wrong —
+    // that's exactly how the real signing bug hid as "balance never
+    // updates." If real keys are configured, a failed fetch is worth
+    // surfacing loudly rather than quietly looking like simulation mode.
+    if (orderClient.isLive) {
+      console.error('refreshBalanceDisplay: live keys set but fetch failed:', resp.retMsg);
+      setDebug('Balance fetch failed (live keys set): ' + resp.retMsg, true);
+    }
+  } catch (err) {
+    console.warn('refreshBalanceDisplay failed:', err);
+    if (orderClient.isLive) setDebug('Balance fetch failed: ' + err.message, true);
+  }
   document.getElementById('balanceValue').textContent = mockBalance.toFixed(2) + ' USDT';
 }
 refreshBalanceDisplay();
