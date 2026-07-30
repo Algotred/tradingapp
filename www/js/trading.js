@@ -2,7 +2,7 @@
    TRADING: tick-size snapping, fee-adjusted trade math, and the
    Bybit order client (real HMAC-SHA256 signing, simulated unless
    real keys are set via Settings). References `selected`, `PnLBox`,
-   `currentSymbol`, and `mockBalance` — all from app.js — only inside
+   `currentSymbol`, and `knownBalance` — all from app.js — only inside
    function bodies, resolved at call time.
    ------------------------------------------------------------
    4. TICK-SIZE SNAPPING
@@ -54,9 +54,9 @@ function snapToStep(qty, step) {
      entry fee + SL fee). Fees reduce the win and *add to* the loss,
      since they're paid either way.
    ============================================================ */
-const FEE_MAKER = 0.00005;   // 0.020%
-const FEE_TAKER = 0.000055;  // 0.055%
-const MARKET_THRESHOLD = 0.00005; // 0.02% — within this of current price => Market order
+const FEE_MAKER = 0.0002;   // 0.020%
+const FEE_TAKER = 0.00055;  // 0.055%
+const MARKET_THRESHOLD = 0.0002; // 0.02% — within this of current price => Market order
 const ENTRY_DEVIATION_LIMIT = 0.10; // 10% — entry must be within this of current price
 
 // Net R:R depends only on entry/tp/sl and whether entry fills Market or
@@ -218,7 +218,9 @@ class BybitOrderClient {
       return { retCode: 0, retMsg: 'OK', result: { orderId: 'SIM-' + time, orderLinkId: '' }, retExtInfo: {}, time };
     }
     if (path === '/v5/account/wallet-balance') {
-      return { retCode: 0, retMsg: 'OK', result: { list: [{ totalAvailableBalance: String(mockBalance), coin: [] }] }, retExtInfo: {}, time };
+      // No real keys configured, so there's no real balance to report —
+      // an honest "unavailable" response, not an invented number.
+      return { retCode: -1, retMsg: 'Simulated: no real balance available without live API keys', result: { list: [] }, retExtInfo: {}, time };
     }
     if (path === '/v5/position/set-leverage') {
       return { retCode: 0, retMsg: 'OK', result: {}, retExtInfo: {}, time };

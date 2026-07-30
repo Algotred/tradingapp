@@ -79,6 +79,11 @@ try {
     timeScale: {
       borderColor: '#2a2e39', timeVisible: true,
       rightOffset: 20, // reserve empty space to the right of the last candle so there's room to draw ahead of price
+      // Default minBarSpacing is only 0.5px — that lets a pinch/zoom push
+      // candles to sub-pixel width, which is what was producing the blank
+      // "Value is null" crash and gappy/broken-looking candle rendering at
+      // extreme zoom. A sane minimum keeps every candle always visible.
+      minBarSpacing: 4,
     },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     handleScale: {
@@ -124,7 +129,7 @@ try {
 // it doesn't make the area time-addressable). The library's own documented
 // fix is WhitespaceData: time-only points with no OHLC, appended after the
 // real data, which makes that future range genuinely interactive.
-const FUTURE_WHITESPACE_BARS = 50;
+const FUTURE_WHITESPACE_BARS = 60;
 function appendFutureWhitespace(data, n) {
   if (data.length < 2) return data;
   const interval = data[data.length - 1].time - data[data.length - 2].time;
@@ -149,10 +154,9 @@ window.lastDisplayedPrice = null;
 // Free-form coin entry, not a fixed list: normalizes casing and appends the
 // USDT quote Bybit's linear perpetuals use, unless a recognized quote
 // suffix is already present. "grass" / "GRASS" / "grassusdt" all resolve
-// to the same GRASSUSDT — MockDataSource/BybitDataSource both already
-// handle arbitrary unknown symbols gracefully (mock falls back to sane
-// generic defaults; the real API just returns its own error if invalid,
-// which our existing fallback logic already catches).
+// to the same GRASSUSDT — the real Bybit API just returns its own
+// error if the symbol is invalid, which the existing error handling
+// in loadSymbol already surfaces via the debug line.
 function normalizeSymbolInput(raw) {
   let s = (raw || '').trim().toUpperCase().replace(/\s+/g, '');
   if (!s) return null;
@@ -226,6 +230,11 @@ function applyLiveCandle(candle, isNewBar) {
 // switchSymbolDrawings is defined later (near primitive management) and
 // referenced here by name — safe because this function is only ever
 // *called* after the whole script has finished defining everything below.
+let _hasLoadedOnce = false; // ensures the very first app-boot load always pulls saved drawings —
+// symbol===previousSymbol is trivially true on that first call (both come
+// from the same initial currentSymbol value), which was silently skipping
+// the reload entirely and made drawings look like they never persisted.
+
 async function loadSymbol(symbol, timeframe) {
   const previousSymbol = currentSymbol;
   setDebug(`Loading ${symbol} ${timeframe}…`);
@@ -245,6 +254,8 @@ async function loadSymbol(symbol, timeframe) {
     chartData = appendFutureWhitespace(klines, FUTURE_WHITESPACE_BARS);
     series.setData(chartData);
     chart.timeScale().fitContent();
+    const _zoomSetting = loadSettings().defaultZoom;
+    if (_zoomSetting != null) chart.timeScale().applyOptions({ barSpacing: _zoomSetting });
     computeBarInterval(chartData);
 
     currentSymbol = symbol;
@@ -254,9 +265,10 @@ async function loadSymbol(symbol, timeframe) {
     updateLastPrice(klines[klines.length - 1].close);
 
     document.querySelectorAll('.tf-btn').forEach(b => b.classList.toggle('active', b.dataset.tf === timeframe));
-    // only reload drawings if the symbol actually changed — a timeframe-only
-    // switch has no reason to detach/reattach the same symbol's drawings
-    if (symbol !== previousSymbol && typeof switchSymbolDrawings === 'function') switchSymbolDrawings(symbol);
+    // reload drawings on the very first load (app boot) OR whenever the
+    // symbol genuinely changes — but not on a same-symbol timeframe switch
+    if ((!_hasLoadedOnce || symbol !== previousSymbol) && typeof switchSymbolDrawings === 'function') switchSymbolDrawings(symbol);
+    _hasLoadedOnce = true;
 
     activeStream = dataSource.subscribeKlines(symbol, timeframe, {
       onCandle: (candle, isNewBar) => { applyLiveCandle(candle, isNewBar); updateLastPrice(candle.close); },
@@ -297,7 +309,7 @@ function setTool(tool) {
   toolButtons.forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
   container.style.cursor = tool === 'cursor' ? 'default' : 'crosshair';
   hint.textContent = {
-    cursor: 'Click a shape to select it, drag its handles to edit',
+    cursor: '',
     trendline: 'Click to place the start point, click again to finish',
     box: 'Click to place a corner, click again for the opposite corner',
     pnl: 'Click to drop a PnL box at that entry price',
@@ -501,10 +513,13 @@ setTool('cursor');
 /* ============================================================
    8. RISK PANEL & CONFIRMATION MODAL
    ------------------------------------------------------------
-   Confirm now goes through the real, correctly-signed BybitOrderClient —
-   it just has no live keys by default, so every call simulates.
+   Confirm goes through the real, correctly-signed BybitOrderClient.
+   Without real keys, order/leverage calls simulate (a deliberate
+   safety default, not fabricated data) — but no NUMBER is ever
+   invented: balance is either the real fetched value or explicitly
+   unavailable ("--"), never a fake placeholder like the old $10,000.
    ============================================================ */
-window.mockBalance = savedSettings.mockBalance ?? 10000; // used both as the simulated balance and the fallback display
+window.knownBalance = null; // null = genuinely unknown right now — never a fake number
 async function refreshBalanceDisplay() {
   try {
     const resp = await orderClient.getWalletBalance();
@@ -512,14 +527,9 @@ async function refreshBalanceDisplay() {
       const bal = Number(resp.result.list[0].totalAvailableBalance);
       document.getElementById('balanceValue').textContent = bal.toFixed(2) + ' USDT';
       document.getElementById('simBadge').style.display = orderClient.isLive ? 'none' : '';
-      if (orderClient.isLive) mockBalance = bal; // keep risk math consistent with whatever's actually displayed
+      knownBalance = bal;
       return;
     }
-    // A non-zero retCode isn't a thrown error, so it silently fell through
-    // to the mock fallback below with zero indication anything was wrong —
-    // that's exactly how the real signing bug hid as "balance never
-    // updates." If real keys are configured, a failed fetch is worth
-    // surfacing loudly rather than quietly looking like simulation mode.
     if (orderClient.isLive) {
       console.error('refreshBalanceDisplay: live keys set but fetch failed:', resp.retMsg);
       setDebug('Balance fetch failed (live keys set): ' + resp.retMsg, true);
@@ -528,7 +538,8 @@ async function refreshBalanceDisplay() {
     console.warn('refreshBalanceDisplay failed:', err);
     if (orderClient.isLive) setDebug('Balance fetch failed: ' + err.message, true);
   }
-  document.getElementById('balanceValue').textContent = mockBalance.toFixed(2) + ' USDT';
+  knownBalance = null;
+  document.getElementById('balanceValue').textContent = '--';
 }
 refreshBalanceDisplay();
 
@@ -561,9 +572,13 @@ async function openConfirmModal(side) {
     setDebug('No PnL box selected — draw or select one first.', true);
     return;
   }
+  if (knownBalance === null) {
+    setDebug('Balance unavailable — set a real API key/secret in Settings first.', true);
+    return;
+  }
   const info = await dataSource.getInstrumentInfo(currentSymbol);
   const currentPrice = lastDisplayedPrice ?? box.entry; // fall back if no tick has arrived yet
-  pendingTrade = computeTradeParams(box, side, riskMode, riskValue, mockBalance, currentPrice, info);
+  pendingTrade = computeTradeParams(box, side, riskMode, riskValue, knownBalance, currentPrice, info);
   renderModal(pendingTrade);
   modalOverlay.classList.add('open');
 }
@@ -638,8 +653,14 @@ document.getElementById('modalConfirm').addEventListener('click', async () => {
    ============================================================ */
 async function reconcileJournal() {
   try {
-    const resp = await orderClient.getOrderHistory(currentSymbol);
-    if (resp.retCode !== 0) return;
+    // getOrderHistory was never exercised against the live API before now
+    // (unlike balance/order/leverage) — a race against a timeout means it
+    // can never hang the journal open indefinitely if something's off.
+    const resp = await Promise.race([
+      orderClient.getOrderHistory(currentSymbol),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('order history request timed out')), 8000)),
+    ]);
+    if (resp.retCode !== 0) { console.warn('reconcileJournal: non-zero retCode', resp.retMsg); return; }
     const journal = loadJournal();
     const existingIds = new Set(journal.map(j => j.orderId));
     let added = false;
@@ -653,7 +674,7 @@ async function reconcileJournal() {
         added = true;
       }
     }
-    if (added) saveJournal(journal);
+    if (added) { saveJournal(journal); renderJournal(); } // live-refresh if the modal is already open
   } catch (err) { console.warn('reconcileJournal failed', err); }
 }
 
@@ -674,13 +695,35 @@ function renderJournal() {
   }).join('');
 }
 
-document.getElementById('journalBtn').addEventListener('click', async () => {
-  await reconcileJournal();
+document.getElementById('journalBtn').addEventListener('click', () => {
+  // open instantly with whatever's already cached — never block the tap
+  // itself on a network call, especially one (order history) that's never
+  // been exercised live before now
   renderJournal();
   document.getElementById('journalOverlay').classList.add('open');
+  reconcileJournal(); // runs in the background, re-renders if it finds anything new
 });
 document.getElementById('journalClose').addEventListener('click', () => {
   document.getElementById('journalOverlay').classList.remove('open');
+});
+document.getElementById('journalDownload').addEventListener('click', () => {
+  const journal = loadJournal();
+  if (!journal.length) { setDebug('No trades to export yet.', true); return; }
+  const headers = ['orderId', 'symbol', 'side', 'qty', 'entry', 'closePrice', 'realizedPnl', 'closedAt'];
+  const rows = journal.map(j => [
+    j.orderId, j.symbol, j.side, j.qty, j.entry, j.closePrice, j.realizedPnl, new Date(j.closedAt).toISOString(),
+  ]);
+  const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `trade-journal-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  setDebug(`Exported ${journal.length} trade(s) to CSV.`);
 });
 
 // reconcile on launch and periodically thereafter, per spec
@@ -731,6 +774,7 @@ function openSettings() {
   document.getElementById('setDefaultTpPct').value = (s.defaultTpPct ?? 2.0);
   document.getElementById('setDefaultSlPct').value = (s.defaultSlPct ?? 1.0);
   document.getElementById('setChartHeightScale').value = s.chartHeightScale ?? '';
+  document.getElementById('setDefaultZoom').value = s.defaultZoom ?? '';
   document.getElementById('setApiKey').value = orderClient.apiKey;
   document.getElementById('setApiSecret').value = orderClient.apiSecret;
   document.getElementById('setUseTestnet').checked = orderClient.testnet;
@@ -754,6 +798,8 @@ document.getElementById('settingsSave').addEventListener('click', () => {
   const newSlPct = parseFloat(document.getElementById('setDefaultSlPct').value) || 1.0;
   const rawScale = document.getElementById('setChartHeightScale').value.trim();
   const newChartHeightScale = rawScale === '' ? null : parseFloat(rawScale);
+  const rawZoom = document.getElementById('setDefaultZoom').value.trim();
+  const newDefaultZoom = rawZoom === '' ? null : Math.max(4, Math.min(60, parseFloat(rawZoom)));
   const newApiKey = document.getElementById('setApiKey').value.trim();
   const newApiSecret = document.getElementById('setApiSecret').value.trim();
   const newUseTestnet = document.getElementById('setUseTestnet').checked;
@@ -762,7 +808,7 @@ document.getElementById('settingsSave').addEventListener('click', () => {
     defaultSymbol: newSymbol, defaultTimeframe: newTimeframe,
     riskMode: settingsRiskMode, riskValue: newRiskValue,
     defaultTpPct: newTpPct, defaultSlPct: newSlPct,
-    chartHeightScale: newChartHeightScale,
+    chartHeightScale: newChartHeightScale, defaultZoom: newDefaultZoom,
     // now persisted per your request — see the in-modal warning about what
     // that tradeoff actually means (this app's own private storage, plain
     // text at the JS layer, not OS-level Keystore encryption)
@@ -783,7 +829,11 @@ document.getElementById('settingsSave').addEventListener('click', () => {
   refreshBalanceDisplay();
   settingsOverlay.classList.remove('open');
 
-  if (newSymbol !== currentSymbol || newTimeframe !== currentTimeframe) loadSymbol(newSymbol, newTimeframe);
+  if (newSymbol !== currentSymbol || newTimeframe !== currentTimeframe) {
+    loadSymbol(newSymbol, newTimeframe); // this also applies defaultZoom, since it reads settings fresh
+  } else if (newDefaultZoom != null) {
+    chart.timeScale().applyOptions({ barSpacing: newDefaultZoom });
+  }
 });
 
 /* ============================================================
@@ -823,6 +873,16 @@ document.addEventListener('visibilitychange', () => {
     console.log('App resumed from background — reloading for a clean, consistent data state.');
     loadSymbol(currentSymbol, currentTimeframe);
   }
+});
+
+// Landscape mode: #app.landscape-mode CSS restructures the layout (see
+// index.html) — this just toggles the class and re-fits the chart once
+// the container's new dimensions settle, so panning/zoom starts from a
+// clean, fully-visible state in either orientation rather than whatever
+// was left over from before the transition.
+document.getElementById('landscapeBtn').addEventListener('click', () => {
+  document.getElementById('app').classList.toggle('landscape-mode');
+  setTimeout(() => chart.timeScale().fitContent(), 50); // let the ResizeObserver-driven resize settle first
 });
 
 })(); // end main()

@@ -69,6 +69,31 @@ function loadSettings() {
   } catch (err) { return {}; }
 }
 
+// --- Real-data cache — replaces the old mock-data fallback entirely. On a
+// failed live fetch: a symbol/timeframe seen before shows its last known
+// REAL data (clearly stale, never fabricated); a never-seen symbol shows
+// nothing rather than invented candles. ---
+function saveCachedKlines(symbol, timeframe, data) {
+  try { localStorage.setItem(STORAGE_PREFIX + 'klinecache:' + symbol + ':' + timeframe, JSON.stringify(data)); }
+  catch (err) { console.warn('saveCachedKlines failed', err); }
+}
+function loadCachedKlines(symbol, timeframe) {
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + 'klinecache:' + symbol + ':' + timeframe);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) { return null; }
+}
+function saveCachedInstrumentInfo(symbol, info) {
+  try { localStorage.setItem(STORAGE_PREFIX + 'instrumentcache:' + symbol, JSON.stringify(info)); }
+  catch (err) { console.warn('saveCachedInstrumentInfo failed', err); }
+}
+function loadCachedInstrumentInfo(symbol) {
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + 'instrumentcache:' + symbol);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) { return null; }
+}
+
 
 // --- Trade journal storage (Phase 5) — pure read/write, kept here with the
 // rest of localStorage persistence. Reconciliation logic and rendering

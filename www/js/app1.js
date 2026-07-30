@@ -11,7 +11,7 @@ await window.__chartsReady; // wait for the CDN script to actually finish loadin
 // bar interval in seconds, derived from the actual data — used to extrapolate
 // time values into the reserved future whitespace, where coordinateToTime()
 // alone returns null because there's no real candle there yet.
-let barIntervalSeconds = 86400;
+window.barIntervalSeconds = 86400;
 function computeBarInterval(data) {
   if (data.length >= 2) barIntervalSeconds = data[data.length - 1].time - data[data.length - 2].time;
 }
@@ -32,6 +32,15 @@ function xToTime(x) {
 }
 function priceToY(p) { return series.priceToCoordinate(p); }
 function yToPrice(y) { return series.coordinateToPrice(y); }
+// These four are called directly from primitives.js — this file's content
+// is wrapped in an async IIFE (see top of file), so plain `let`/`function`
+// declarations here are private to that closure and invisible to other
+// <script> tags no matter the load order. Explicit window exposure is what
+// actually makes them callable from primitives.js/trading.js.
+window.timeToX = timeToX;
+window.xToTime = xToTime;
+window.priceToY = priceToY;
+window.yToPrice = yToPrice;
 
 // shift an x-coordinate by a fixed number of *screen pixels* and convert back
 // to a time value — this is what keeps the PnL box a constant visual size
@@ -41,9 +50,11 @@ function addPixels(xRef, pixels) { return xToTime(xRef + pixels); }
 
 function bitX(scope, mediaX) { return Math.round(mediaX * scope.horizontalPixelRatio); }
 function bitY(scope, mediaY) { return Math.round(mediaY * scope.verticalPixelRatio); }
+window.bitX = bitX;
+window.bitY = bitY;
 
-const HANDLE_R = 5;       // px radius for the visible endpoint handle dot
-const HIT_TOL = 14;       // px tolerance for hit-testing — generous for touch/fingertip accuracy
+window.HANDLE_R = 5;       // px radius for the visible endpoint handle dot
+window.HIT_TOL = 14;       // px tolerance for hit-testing — generous for touch/fingertip accuracy
 
 /* ============================================================
    5. CHART SETUP
@@ -113,7 +124,7 @@ try {
 // it doesn't make the area time-addressable). The library's own documented
 // fix is WhitespaceData: time-only points with no OHLC, appended after the
 // real data, which makes that future range genuinely interactive.
-const FUTURE_WHITESPACE_BARS = 60;
+const FUTURE_WHITESPACE_BARS = 50;
 function appendFutureWhitespace(data, n) {
   if (data.length < 2) return data;
   const interval = data[data.length - 1].time - data[data.length - 2].time;
@@ -130,10 +141,10 @@ const symbolNameEl = document.getElementById('symbolName');
 const lastPriceEl = document.getElementById('lastPrice');
 const connStatusEl = document.getElementById('connStatus');
 const savedSettings = loadSettings();
-let currentSymbol = savedSettings.defaultSymbol || 'BTCUSDT';
+window.currentSymbol = savedSettings.defaultSymbol || 'BTCUSDT';
 let currentTimeframe = savedSettings.defaultTimeframe || '15m';
 let activeStream = null;
-let lastDisplayedPrice = null;
+window.lastDisplayedPrice = null;
 
 // Free-form coin entry, not a fixed list: normalizes casing and appends the
 // USDT quote Bybit's linear perpetuals use, unless a recognized quote
@@ -162,7 +173,11 @@ symbolNameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') commitS
 symbolNameEl.addEventListener('blur', commitSymbolInput);
 
 function updateLastPrice(price) {
-  lastPriceEl.textContent = price.toFixed(currentTickSize < 1 ? 2 : 0);
+  // real precision derived from the instrument's actual tick size — fixes
+  // low-price coins (e.g. GRASSUSDT at 0.34 showing as "0.34" when the real
+  // tradeable precision is 0.3453) and very small-value coins (e.g.
+  // 0.000002, which would round to "0.00" under the old fixed 2-decimal rule)
+  lastPriceEl.textContent = price.toFixed(decimalsForTick(currentTickSize));
   if (lastDisplayedPrice !== null) {
     lastPriceEl.classList.remove('up', 'down');
     lastPriceEl.classList.add(price >= lastDisplayedPrice ? 'up' : 'down');
@@ -170,7 +185,7 @@ function updateLastPrice(price) {
   lastDisplayedPrice = price;
 }
 
-let chartData = []; // real candles + trailing future-whitespace points, kept in sync with the series
+window.chartData = []; // real candles + trailing future-whitespace points, kept in sync with the series
 
 // series.update() requires the new point's time to be >= the series' last
 // existing point — but our series always ends with future whitespace points
@@ -180,13 +195,26 @@ let chartData = []; // real candles + trailing future-whitespace points, kept in
 function applyLiveCandle(candle, isNewBar) {
   let realEnd = 0;
   while (realEnd < chartData.length && chartData[realEnd].open !== undefined) realEnd++;
+
+  // Defensive guard: after the app sits backgrounded for a while, a
+  // reconnecting WebSocket can deliver a candle referencing a moment
+  // that's now stale relative to what's already shown. Passing an
+  // out-of-order point to series.setData() throws deep inside the
+  // charting library ("Value is null") — safer to just ignore it here.
+  if (realEnd > 0 && candle.time < chartData[realEnd - 1].time) {
+    console.warn('Ignoring stale live candle (older than last shown bar):', candle);
+    return;
+  }
+
   if (isNewBar) {
-    // the first whitespace slot's time is always exactly last-real-time +
-    // interval — i.e. it was already reserved for precisely this new bar.
-    // Overwrite it in place rather than inserting, which would leave a
-    // duplicate/out-of-order timestamp sitting right next to it.
-    if (realEnd < chartData.length) chartData[realEnd] = candle;
-    else chartData.push(candle); // no whitespace left (shouldn't normally happen)
+    // Rebuild the whitespace tail fresh, relative to this candle's actual
+    // time, instead of overwriting one specific slot — a background gap
+    // can jump the live time forward by more than one bar interval, which
+    // would otherwise leave old whitespace points sitting stale/out-of-
+    // order right after the overwritten one.
+    const realCandles = chartData.slice(0, realEnd);
+    realCandles.push(candle);
+    chartData = appendFutureWhitespace(realCandles, FUTURE_WHITESPACE_BARS);
   } else if (realEnd > 0) {
     chartData[realEnd - 1] = candle; // update the still-forming last real candle in place
   } else {
@@ -210,6 +238,10 @@ async function loadSymbol(symbol, timeframe) {
       dataSource.getInstrumentInfo(symbol),
     ]);
     currentTickSize = info.tickSize;
+    // the chart's own Y-axis labels default to lightweight-charts' generic
+    // precision otherwise — this keeps them matching the real instrument's
+    // tick size too (same fix as updateLastPrice, applied to the chart itself)
+    series.applyOptions({ priceFormat: { type: 'price', precision: decimalsForTick(currentTickSize), minMove: currentTickSize } });
     chartData = appendFutureWhitespace(klines, FUTURE_WHITESPACE_BARS);
     series.setData(chartData);
     chart.timeScale().fitContent();
@@ -253,7 +285,7 @@ new ResizeObserver(entries => {
    ============================================================ */
 const primitives = [];
 let activeTool = 'cursor';
-let selected = null;
+window.selected = null;
 let dragging = null;        // { primitive, handle }
 let creating = null;        // primitive currently being placed (trendline/box ghost)
 
@@ -472,7 +504,7 @@ setTool('cursor');
    Confirm now goes through the real, correctly-signed BybitOrderClient —
    it just has no live keys by default, so every call simulates.
    ============================================================ */
-let mockBalance = savedSettings.mockBalance ?? 10000; // used both as the simulated balance and the fallback display
+window.mockBalance = savedSettings.mockBalance ?? 10000; // used both as the simulated balance and the fallback display
 async function refreshBalanceDisplay() {
   try {
     const resp = await orderClient.getWalletBalance();
@@ -483,7 +515,19 @@ async function refreshBalanceDisplay() {
       if (orderClient.isLive) mockBalance = bal; // keep risk math consistent with whatever's actually displayed
       return;
     }
-  } catch (err) { console.warn('refreshBalanceDisplay failed:', err); }
+    // A non-zero retCode isn't a thrown error, so it silently fell through
+    // to the mock fallback below with zero indication anything was wrong —
+    // that's exactly how the real signing bug hid as "balance never
+    // updates." If real keys are configured, a failed fetch is worth
+    // surfacing loudly rather than quietly looking like simulation mode.
+    if (orderClient.isLive) {
+      console.error('refreshBalanceDisplay: live keys set but fetch failed:', resp.retMsg);
+      setDebug('Balance fetch failed (live keys set): ' + resp.retMsg, true);
+    }
+  } catch (err) {
+    console.warn('refreshBalanceDisplay failed:', err);
+    if (orderClient.isLive) setDebug('Balance fetch failed: ' + err.message, true);
+  }
   document.getElementById('balanceValue').textContent = mockBalance.toFixed(2) + ' USDT';
 }
 refreshBalanceDisplay();
@@ -547,15 +591,29 @@ document.getElementById('longBtn').addEventListener('click', () => openConfirmMo
 document.getElementById('shortBtn').addEventListener('click', () => openConfirmModal('short'));
 document.getElementById('modalClose').addEventListener('click', closeModal);
 document.getElementById('modalCancel').addEventListener('click', closeModal);
+const BYBIT_LEVERAGE_NOT_MODIFIED = 110043; // Bybit's code for "already at that value" — not a real failure
+const _lastConfirmedLeverage = {}; // { symbol: leverage } — lets repeat orders skip a redundant round-trip
+
 document.getElementById('modalConfirm').addEventListener('click', async () => {
   if (!pendingTrade || !pendingTrade.valid) return;
   const p = pendingTrade;
   modalConfirm.disabled = true;
   modalConfirm.textContent = 'Placing…';
   try {
-    // required leverage gets set BEFORE the order per spec, then injected via the order's implicit leverage
-    const levResp = await orderClient.setLeverage(p.symbol, Math.ceil(p.requiredLeverage));
-    if (levResp.retCode !== 0) throw new Error('setLeverage: ' + levResp.retMsg);
+    const targetLeverage = Math.ceil(p.requiredLeverage);
+    // Speed optimization for scalping: skip the network round-trip entirely
+    // if we already know this symbol is at the right leverage — otherwise
+    // every single order pays for a redundant setLeverage call.
+    if (_lastConfirmedLeverage[p.symbol] !== targetLeverage) {
+      const levResp = await orderClient.setLeverage(p.symbol, targetLeverage);
+      // retCode 110043 = "leverage not modified" = already correct, NOT a
+      // failure — treating it as fatal here previously blocked valid orders
+      // whenever leverage happened to already match (confirmed real bug).
+      if (levResp.retCode !== 0 && levResp.retCode !== BYBIT_LEVERAGE_NOT_MODIFIED) {
+        throw new Error('setLeverage: ' + levResp.retMsg);
+      }
+      _lastConfirmedLeverage[p.symbol] = targetLeverage;
+    }
     const orderResp = await orderClient.createOrder(p);
     if (orderResp.retCode !== 0) throw new Error('createOrder: ' + orderResp.retMsg);
     const mode = orderClient.isLive ? 'LIVE' : 'SIMULATED';
@@ -675,6 +733,7 @@ function openSettings() {
   document.getElementById('setChartHeightScale').value = s.chartHeightScale ?? '';
   document.getElementById('setApiKey').value = orderClient.apiKey;
   document.getElementById('setApiSecret').value = orderClient.apiSecret;
+  document.getElementById('setUseTestnet').checked = orderClient.testnet;
 
   settingsOverlay.classList.add('open');
 }
@@ -695,18 +754,25 @@ document.getElementById('settingsSave').addEventListener('click', () => {
   const newSlPct = parseFloat(document.getElementById('setDefaultSlPct').value) || 1.0;
   const rawScale = document.getElementById('setChartHeightScale').value.trim();
   const newChartHeightScale = rawScale === '' ? null : parseFloat(rawScale);
+  const newApiKey = document.getElementById('setApiKey').value.trim();
+  const newApiSecret = document.getElementById('setApiSecret').value.trim();
+  const newUseTestnet = document.getElementById('setUseTestnet').checked;
 
   saveSettings({
     defaultSymbol: newSymbol, defaultTimeframe: newTimeframe,
     riskMode: settingsRiskMode, riskValue: newRiskValue,
     defaultTpPct: newTpPct, defaultSlPct: newSlPct,
     chartHeightScale: newChartHeightScale,
+    // now persisted per your request — see the in-modal warning about what
+    // that tradeoff actually means (this app's own private storage, plain
+    // text at the JS layer, not OS-level Keystore encryption)
+    apiKey: newApiKey, apiSecret: newApiSecret, useTestnet: newUseTestnet,
   });
   applyChartHeightScale(newChartHeightScale);
 
-  // apply immediately, session-memory only — never written to localStorage
-  orderClient.apiKey = document.getElementById('setApiKey').value.trim();
-  orderClient.apiSecret = document.getElementById('setApiSecret').value.trim();
+  orderClient.apiKey = newApiKey;
+  orderClient.apiSecret = newApiSecret;
+  orderClient.setNetwork(newUseTestnet);
 
   // reflect the new risk defaults in the always-visible risk bar too
   riskMode = settingsRiskMode;
@@ -740,5 +806,23 @@ loadSymbol(currentSymbol, currentTimeframe);
 const countdownBadge = new CandleCountdownBadge();
 series.attachPrimitive(countdownBadge);
 setInterval(() => countdownBadge.refresh(), 1000);
+
+// Mobile OS/WebView power-saving throttles or suspends JS timers and can
+// leave the WebSocket connection in an unpredictable state while the app
+// sits backgrounded — the connection object might report "open" while
+// actually stale. Rather than trust it, force a full clean reload (fresh
+// REST candles + fresh WS reconnect) the moment the app becomes visible
+// again, so nothing here has to guess how long it was away or what state
+// a resumed connection is really in.
+let _wasHidden = false;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    _wasHidden = true;
+  } else if (_wasHidden) {
+    _wasHidden = false;
+    console.log('App resumed from background — reloading for a clean, consistent data state.');
+    loadSymbol(currentSymbol, currentTimeframe);
+  }
+});
 
 })(); // end main()

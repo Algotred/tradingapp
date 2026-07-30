@@ -165,6 +165,28 @@
   .journal-entry .je-pnl.win{color:var(--green);}
   .journal-entry .je-pnl.loss{color:var(--red);}
   .journal-empty{color:var(--muted);font-size:12px;text-align:center;padding:20px 0;}
+  /* ---- Landscape mode: maximize chart area, timeframes become a vertical
+     strip on the right edge (the SAME #tfRow element, just repositioned —
+     not a duplicate, so active-state highlighting keeps working with zero
+     JS changes), drawing tools stay a slim strip at the top. Everything
+     else (balance/risk/journal row, hint, debug line) hides — matches the
+     original spec's "collapse trade panel, maximize chart". ---- */
+  #app.landscape-mode #headerTop{padding:4px 8px;}
+  #app.landscape-mode #symbolName{font-size:13px;width:72px;}
+  #app.landscape-mode #lastPrice{font-size:12px;}
+  #app.landscape-mode #journalBtn{display:none;}
+  #app.landscape-mode #toolbar{padding:4px 8px;gap:4px;}
+  #app.landscape-mode .tool-btn{padding:5px 8px;font-size:12px;}
+  #app.landscape-mode #hintRow,
+  #app.landscape-mode #riskBar,
+  #app.landscape-mode #debugLine{display:none;}
+  #app.landscape-mode #chart-container{flex:1;min-height:0;}
+
+  #app.landscape-mode #tfRow{
+    position:fixed;top:0;right:0;bottom:0;z-index:50;
+    display:flex;flex-direction:column;justify-content:center;gap:6px;
+    padding:8px 6px;background:rgba(19,23,34,0.85);width:auto;
+  }
 </style>
 </head>
 <body>
@@ -175,6 +197,7 @@
       <span id="lastPrice">--</span>
       <span id="connStatus" class="connecting" title="Connecting…"></span>
       <button id="journalBtn" class="icon-btn" title="Trade Journal">📖</button>
+      <button id="landscapeBtn" class="icon-btn" title="Landscape mode">⛶</button>
       <button id="settingsBtn" class="icon-btn" title="Settings">⚙</button>
     </div>
     <div id="tfRow"></div>
@@ -253,6 +276,9 @@
       <label class="field-label">Chart Area Height (1–10, decimals OK — blank = current default size)</label>
       <input id="setChartHeightScale" type="number" min="1" max="10" step="0.1" placeholder="Default">
 
+      <label class="field-label">Default Zoom — px per candle (blank = fit all candles on load, like now)</label>
+      <input id="setDefaultZoom" type="number" min="4" max="60" step="1" placeholder="Default">
+
       <div class="field-sep"></div>
       <div class="warn" style="margin:4px 0 10px;">
         API keys are now saved on this device (this app's own private storage,
@@ -283,6 +309,9 @@
       <button id="journalClose">✕</button>
     </div>
     <div id="journalBody" class="sheet-body"></div>
+    <div id="modalFooter">
+      <button id="journalDownload" class="modal-btn confirm">Download CSV</button>
+    </div>
   </div>
 </div>
 
