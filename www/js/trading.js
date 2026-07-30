@@ -261,6 +261,13 @@ class BybitOrderClient {
   getOrderHistory(symbol, limit = 50) {
     return this._request('GET', '/v5/order/history', { category: 'linear', symbol, limit });
   }
+  // The journal needs entry price, exit price, AND realized PnL together —
+  // an individual order (order/history) is only ever one leg of a trade
+  // (entry OR exit), with no "close price" concept at all. This is the
+  // endpoint that actually reports completed round-trip trades.
+  getClosedPnl(symbol, limit = 50) {
+    return this._request('GET', '/v5/position/closed-pnl', { category: 'linear', symbol, limit });
+  }
 }
 
 // Restore any previously saved credentials/network choice immediately —

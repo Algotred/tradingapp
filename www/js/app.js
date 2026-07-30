@@ -227,16 +227,7 @@ function applyLiveCandle(candle, isNewBar) {
   series.setData(chartData);
 }
 
-// switchSymbolDrawings is defined later (near primitive management) and
-// referenced here by name — safe because this function is only ever
-// *called* after the whole script has finished defining everything below.
-let _hasLoadedOnce = false; // ensures the very first app-boot load always pulls saved drawings —
-// symbol===previousSymbol is trivially true on that first call (both come
-// from the same initial currentSymbol value), which was silently skipping
-// the reload entirely and made drawings look like they never persisted.
-
 async function loadSymbol(symbol, timeframe) {
-  const previousSymbol = currentSymbol;
   setDebug(`Loading ${symbol} ${timeframe}…`);
   if (activeStream) { activeStream.close(); activeStream = null; }
   connStatusEl.className = 'connecting';
@@ -265,10 +256,10 @@ async function loadSymbol(symbol, timeframe) {
     updateLastPrice(klines[klines.length - 1].close);
 
     document.querySelectorAll('.tf-btn').forEach(b => b.classList.toggle('active', b.dataset.tf === timeframe));
-    // reload drawings on the very first load (app boot) OR whenever the
-    // symbol genuinely changes — but not on a same-symbol timeframe switch
-    if ((!_hasLoadedOnce || symbol !== previousSymbol) && typeof switchSymbolDrawings === 'function') switchSymbolDrawings(symbol);
-    _hasLoadedOnce = true;
+    // per-timeframe keying means every load — boot, symbol change, or
+    // timeframe switch — needs its own reload; there's no "unchanged, skip
+    // it" case left, since the storage key itself is symbol+timeframe now
+    if (typeof switchSymbolDrawings === 'function') switchSymbolDrawings(symbol, timeframe);
 
     activeStream = dataSource.subscribeKlines(symbol, timeframe, {
       onCandle: (candle, isNewBar) => { applyLiveCandle(candle, isNewBar); updateLastPrice(candle.close); },
@@ -336,19 +327,21 @@ function removePrimitive(p) {
   if (selected === p) selected = null;
 }
 
-// swaps out every on-chart drawing for the ones persisted under the new
-// symbol — called by loadSymbol() whenever the symbol changes
-function switchSymbolDrawings(symbol) {
+// swaps out every on-chart drawing for the ones persisted under this exact
+// symbol+timeframe — called by loadSymbol() on every load (not just symbol
+// changes), since drawings are scoped per-timeframe: a 1m trendline isn't
+// expected to reappear on 5m, but should reappear when you switch back to 1m
+function switchSymbolDrawings(symbol, timeframe) {
   [...primitives].forEach(removePrimitive);
-  loadDrawings(symbol).forEach(addPrimitive);
+  loadDrawings(symbol, timeframe).forEach(addPrimitive);
 }
 
 document.getElementById('deleteBtn').addEventListener('click', () => {
-  if (selected) { removePrimitive(selected); saveDrawings(currentSymbol); }
+  if (selected) { removePrimitive(selected); saveDrawings(currentSymbol, currentTimeframe); }
 });
 document.getElementById('clearBtn').addEventListener('click', () => {
   [...primitives].forEach(removePrimitive);
-  saveDrawings(currentSymbol);
+  saveDrawings(currentSymbol, currentTimeframe);
 });
 
 /* ---- pointer handling (mouse + touch) on the chart's own container ----
@@ -416,7 +409,7 @@ function handlePointerDown(x, y, evt) {
       creating.refresh();
       creating = null;
       setTool('cursor');
-      saveDrawings(currentSymbol);
+      saveDrawings(currentSymbol, currentTimeframe);
     }
   } else if (activeTool === 'box') {
     if (!creating) {
@@ -426,7 +419,7 @@ function handlePointerDown(x, y, evt) {
       creating.refresh();
       creating = null;
       setTool('cursor');
-      saveDrawings(currentSymbol);
+      saveDrawings(currentSymbol, currentTimeframe);
     }
   } else if (activeTool === 'pnl') {
     const PNL_BOX_PIXEL_WIDTH = 90; // constant on-screen size at any zoom level
@@ -439,7 +432,7 @@ function handlePointerDown(x, y, evt) {
     lastEditedPnLBox = box;
     select(box);
     setTool('cursor');
-    saveDrawings(currentSymbol);
+    saveDrawings(currentSymbol, currentTimeframe);
   }
 }
 
@@ -474,7 +467,7 @@ function handlePointerUp() {
     if (dragging.primitive instanceof PnLBox) lastEditedPnLBox = dragging.primitive;
     dragging = null;
     setChartInteractive(true); // release the lock the instant the drag ends
-    saveDrawings(currentSymbol);
+    saveDrawings(currentSymbol, currentTimeframe);
   }
 }
 
@@ -657,19 +650,22 @@ async function reconcileJournal() {
     // (unlike balance/order/leverage) — a race against a timeout means it
     // can never hang the journal open indefinitely if something's off.
     const resp = await Promise.race([
-      orderClient.getOrderHistory(currentSymbol),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('order history request timed out')), 8000)),
+      orderClient.getClosedPnl(currentSymbol),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('closed-pnl request timed out')), 8000)),
     ]);
     if (resp.retCode !== 0) { console.warn('reconcileJournal: non-zero retCode', resp.retMsg); return; }
     const journal = loadJournal();
     const existingIds = new Set(journal.map(j => j.orderId));
     let added = false;
     for (const o of resp.result.list) {
-      if (o.orderStatus === 'Filled' && !existingIds.has(o.orderId)) {
+      // closed-pnl only ever lists genuinely completed round-trip trades —
+      // there's no separate "Filled" status check needed here, unlike
+      // order/history which mixes in still-open/cancelled/rejected orders.
+      if (!existingIds.has(o.orderId)) {
         journal.unshift({
           orderId: o.orderId, symbol: o.symbol, side: o.side === 'Buy' ? 'long' : 'short',
-          qty: Number(o.qty), entry: Number(o.avgPrice), closePrice: Number(o.closePrice),
-          realizedPnl: Number(o.realizedPnl), closedAt: Number(o.updatedTime),
+          qty: Number(o.qty), entry: Number(o.avgEntryPrice), closePrice: Number(o.avgExitPrice),
+          realizedPnl: Number(o.closedPnl), closedAt: Number(o.updatedTime),
         });
         added = true;
       }
@@ -682,15 +678,20 @@ function renderJournal() {
   const journal = loadJournal();
   const body = document.getElementById('journalBody');
   if (!journal.length) { body.innerHTML = '<div class="journal-empty">No filled trades yet.</div>'; return; }
+  // Defensive: null-safe formatting for any entry saved before this fix
+  // (order/history has no closePrice field at all — that mismatch is what
+  // was crashing this screen; corrupted legacy entries may still be
+  // sitting in local storage even after the underlying bug is fixed).
+  const fmt = (n) => (typeof n === 'number' && !isNaN(n)) ? n.toFixed(2) : '—';
   body.innerHTML = journal.map(j => {
-    const win = j.realizedPnl >= 0;
-    const date = new Date(j.closedAt).toLocaleString();
+    const win = (j.realizedPnl ?? 0) >= 0;
+    const date = j.closedAt ? new Date(j.closedAt).toLocaleString() : 'unknown time';
     return `<div class="journal-entry">
       <div class="je-main">
-        <span class="je-symbol">${j.symbol} · ${j.side.toUpperCase()}</span>
-        <span class="je-detail">${j.entry.toFixed(2)} → ${j.closePrice.toFixed(2)} · qty ${j.qty} · ${date}</span>
+        <span class="je-symbol">${j.symbol || '?'} · ${(j.side || '?').toUpperCase()}</span>
+        <span class="je-detail">${fmt(j.entry)} → ${fmt(j.closePrice)} · qty ${j.qty ?? '?'} · ${date}</span>
       </div>
-      <span class="je-pnl ${win ? 'win' : 'loss'}">${win ? '+' : ''}${j.realizedPnl.toFixed(2)}</span>
+      <span class="je-pnl ${win ? 'win' : 'loss'}">${win ? '+' : ''}${fmt(j.realizedPnl)}</span>
     </div>`;
   }).join('');
 }
@@ -868,6 +869,12 @@ let _wasHidden = false;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     _wasHidden = true;
+    // Defensive safety net: every mutation already saves immediately, so
+    // this should be redundant in the normal case — but if Android ever
+    // hard-kills the process on backgrounding before a prior save's write
+    // truly lands, this guarantees one last save attempt right as hiding
+    // starts, not after it's too late.
+    saveDrawings(currentSymbol, currentTimeframe);
   } else if (_wasHidden) {
     _wasHidden = false;
     console.log('App resumed from background — reloading for a clean, consistent data state.');
@@ -876,12 +883,24 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // Landscape mode: #app.landscape-mode CSS restructures the layout (see
-// index.html) — this just toggles the class and re-fits the chart once
-// the container's new dimensions settle, so panning/zoom starts from a
-// clean, fully-visible state in either orientation rather than whatever
-// was left over from before the transition.
-document.getElementById('landscapeBtn').addEventListener('click', () => {
-  document.getElementById('app').classList.toggle('landscape-mode');
+// index.html). The CSS class alone only re-arranges elements WITHIN
+// whatever orientation the phone is physically in — it does not rotate
+// the screen itself. ScreenOrientation.lock() does that part, forcing
+// actual landscape regardless of the system auto-rotate setting (which
+// otherwise blocks rotation entirely, by design — no web app can or
+// should override that setting itself). Falls back to CSS-only if the
+// plugin isn't available (e.g. testing in a plain browser).
+const ScreenOrientation = window.Capacitor?.Plugins?.ScreenOrientation;
+document.getElementById('landscapeBtn').addEventListener('click', async () => {
+  const nowLandscape = document.getElementById('app').classList.toggle('landscape-mode');
+  if (ScreenOrientation) {
+    try {
+      if (nowLandscape) await ScreenOrientation.lock({ orientation: 'landscape' });
+      else await ScreenOrientation.unlock();
+    } catch (err) {
+      console.warn('ScreenOrientation lock/unlock failed (falling back to CSS-only layout change):', err);
+    }
+  }
   setTimeout(() => chart.timeScale().fitContent(), 50); // let the ResizeObserver-driven resize settle first
 });
 

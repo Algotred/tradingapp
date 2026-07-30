@@ -41,15 +41,15 @@ function deserializePrimitive(d) {
   if (d.type === 'pnl') return new PnLBox(d.t1, d.t2, d.entry, d.tp, d.sl);
   return null;
 }
-function saveDrawings(symbol) {
+function saveDrawings(symbol, timeframe) {
   try {
     const serialized = primitives.map(serializePrimitive).filter(Boolean);
-    localStorage.setItem(STORAGE_PREFIX + 'drawings:' + symbol, JSON.stringify(serialized));
+    localStorage.setItem(STORAGE_PREFIX + 'drawings:' + symbol + ':' + timeframe, JSON.stringify(serialized));
   } catch (err) { console.warn('saveDrawings failed', err); }
 }
-function loadDrawings(symbol) {
+function loadDrawings(symbol, timeframe) {
   try {
-    const raw = localStorage.getItem(STORAGE_PREFIX + 'drawings:' + symbol);
+    const raw = localStorage.getItem(STORAGE_PREFIX + 'drawings:' + symbol + ':' + timeframe);
     if (!raw) return [];
     return JSON.parse(raw).map(deserializePrimitive).filter(Boolean);
   } catch (err) { console.warn('loadDrawings failed', err); return []; }
