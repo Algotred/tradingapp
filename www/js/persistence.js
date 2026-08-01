@@ -43,7 +43,10 @@ function deserializePrimitive(d) {
 }
 function saveDrawings(symbol, timeframe) {
   try {
-    const serialized = primitives.map(serializePrimitive).filter(Boolean);
+    // read-only entries are reference drawings borrowed from a LOWER
+    // timeframe (see switchSymbolDrawings) — they already live correctly
+    // in their own timeframe's slot and must never be written here too
+    const serialized = primitives.filter(p => !p.readOnly).map(serializePrimitive).filter(Boolean);
     localStorage.setItem(STORAGE_PREFIX + 'drawings:' + symbol + ':' + timeframe, JSON.stringify(serialized));
   } catch (err) { console.warn('saveDrawings failed', err); }
 }

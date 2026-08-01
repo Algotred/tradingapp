@@ -54,6 +54,7 @@ class TrendLine extends DraggablePrimitive {
     target.useBitmapCoordinateSpace(scope => {
       const ctx = scope.context;
       ctx.save();
+      if (this.readOnly) ctx.globalAlpha = 0.35; // lower-timeframe reference — visual only
       ctx.strokeStyle = this.color;
       ctx.lineWidth = 2 * scope.horizontalPixelRatio;
       ctx.beginPath();
@@ -126,6 +127,7 @@ class BoxDrawing extends DraggablePrimitive {
       const bx1 = bitX(scope, Math.min(x1, x2)), bx2 = bitX(scope, Math.max(x1, x2));
       const by1 = bitY(scope, Math.min(y1, y2)), by2 = bitY(scope, Math.max(y1, y2));
       ctx.save();
+      if (this.readOnly) ctx.globalAlpha = 0.35; // lower-timeframe reference — visual only
       ctx.fillStyle = this.color + '2A';
       ctx.fillRect(bx1, by1, bx2 - bx1, by2 - by1);
       ctx.strokeStyle = this.color;
@@ -207,6 +209,7 @@ class PnLBox extends DraggablePrimitive {
       const ctx = scope.context;
       const bxL = bitX(scope, Math.min(xL, xR)), bxR = bitX(scope, Math.max(xL, xR));
       ctx.save();
+      if (this.readOnly) ctx.globalAlpha = 0.35; // lower-timeframe reference — visual only
       // green (win) zone: entry -> tp
       ctx.fillStyle = 'rgba(38,166,154,0.22)';
       ctx.fillRect(bxL, bitY(scope, Math.min(yE, yTp)), bxR - bxL, Math.abs(bitY(scope, yTp) - bitY(scope, yE)));

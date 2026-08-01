@@ -78,12 +78,12 @@ try {
     },
     timeScale: {
       borderColor: '#2a2e39', timeVisible: true,
-      rightOffset: 20, // reserve empty space to the right of the last candle so there's room to draw ahead of price
+      rightOffset: 40, // reserve empty space to the right of the last candle so there's room to draw ahead of price
       // Default minBarSpacing is only 0.5px — that lets a pinch/zoom push
       // candles to sub-pixel width, which is what was producing the blank
       // "Value is null" crash and gappy/broken-looking candle rendering at
       // extreme zoom. A sane minimum keeps every candle always visible.
-      minBarSpacing: 4,
+      minBarSpacing: 2,
     },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     handleScale: {
@@ -129,7 +129,7 @@ try {
 // it doesn't make the area time-addressable). The library's own documented
 // fix is WhitespaceData: time-only points with no OHLC, appended after the
 // real data, which makes that future range genuinely interactive.
-const FUTURE_WHITESPACE_BARS = 60;
+const FUTURE_WHITESPACE_BARS = 40;
 function appendFutureWhitespace(data, n) {
   if (data.length < 2) return data;
   const interval = data[data.length - 1].time - data[data.length - 2].time;
@@ -286,7 +286,7 @@ new ResizeObserver(entries => {
 /* ============================================================
    7. TOOL / SELECTION / DRAG STATE MANAGEMENT
    ============================================================ */
-const primitives = [];
+window.primitives = [];
 let activeTool = 'cursor';
 window.selected = null;
 let dragging = null;        // { primitive, handle }
@@ -327,20 +327,34 @@ function removePrimitive(p) {
   if (selected === p) selected = null;
 }
 
-// swaps out every on-chart drawing for the ones persisted under this exact
-// symbol+timeframe — called by loadSymbol() on every load (not just symbol
-// changes), since drawings are scoped per-timeframe: a 1m trendline isn't
-// expected to reappear on 5m, but should reappear when you switch back to 1m
+// Swaps out every on-chart drawing for what should be visible on this exact
+// symbol+timeframe: this timeframe's own drawings (fully interactive) PLUS
+// every drawing from a LOWER timeframe shown as a read-only reference (per
+// request — a 1m PnL box should still be visible on 5m/15m/1h/etc., but
+// never draggable/selectable there, and a 5m drawing should never appear
+// on 1m/3m at all). Higher-timeframe drawings never appear on a lower
+// timeframe chart, in either direction.
 function switchSymbolDrawings(symbol, timeframe) {
   [...primitives].forEach(removePrimitive);
-  loadDrawings(symbol, timeframe).forEach(addPrimitive);
+  const myRank = TIMEFRAMES.indexOf(timeframe);
+  TIMEFRAMES.forEach((tf, rank) => {
+    if (rank > myRank) return; // never show a higher timeframe's drawings here
+    const isOwnTimeframe = (tf === timeframe);
+    loadDrawings(symbol, tf).forEach(p => {
+      p.readOnly = !isOwnTimeframe;
+      addPrimitive(p);
+    });
+  });
 }
 
 document.getElementById('deleteBtn').addEventListener('click', () => {
   if (selected) { removePrimitive(selected); saveDrawings(currentSymbol, currentTimeframe); }
 });
 document.getElementById('clearBtn').addEventListener('click', () => {
-  [...primitives].forEach(removePrimitive);
+  // only this timeframe's own drawings — read-only references borrowed
+  // from a lower timeframe aren't this timeframe's to clear, and would
+  // just reappear on next visit anyway since their real home slot is untouched
+  primitives.filter(p => !p.readOnly).forEach(removePrimitive);
   saveDrawings(currentSymbol, currentTimeframe);
 });
 
@@ -370,6 +384,7 @@ function getXY(clientX, clientY) {
 function handlePointerDown(x, y, evt) {
   if (activeTool === 'cursor') {
     for (let i = primitives.length - 1; i >= 0; i--) {
+      if (primitives[i].readOnly) continue; // lower-timeframe reference drawings — visual only, never selectable/draggable
       const hit = primitives[i].hitTest(x, y);
       if (hit) {
         if (primitives[i] !== selected) {
@@ -455,6 +470,7 @@ function handlePointerMove(x, y, evt) {
   if (activeTool === 'cursor') {
     let hovering = null;
     for (let i = primitives.length - 1; i >= 0 && !hovering; i--) {
+      if (primitives[i].readOnly) continue;
       hovering = primitives[i].hitTest(x, y);
     }
     container.style.cursor = hovering ? (hovering === 'body' ? 'move' : 'pointer') : 'default';
@@ -905,3 +921,6 @@ document.getElementById('landscapeBtn').addEventListener('click', async () => {
 });
 
 })(); // end main()
+
+
+
